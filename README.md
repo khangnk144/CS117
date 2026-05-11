@@ -1,14 +1,14 @@
 # Smart Parking Slot Occupancy Detection & Shortest-Path Navigation
 
-CS117 project using **YOLOv8s** (COCO pretrained) for vehicle detection and **Dijkstra's algorithm** for shortest-path navigation to the nearest vacant parking slot.
+CS117 project developed by **Nguyễn Khang**. This project uses **YOLOv8** (e.g., YOLOv8s or YOLOv8m) for vehicle detection and **Dijkstra's algorithm** for shortest-path navigation to the nearest vacant parking slot.
 
 ## Architecture
 
 ```
-Frame → YOLOv8s (detect vehicles) → IoU with slot polygons → Slot status
-                                                              ↓
+Frame → YOLOv8 (detect vehicles) → IoU with slot polygons → Slot status
+                                                             ↓
                                             Dijkstra → Nearest vacant slot
-                                                              ↓
+                                                             ↓
                                              Web UI (annotated video + 2D map)
 ```
 
@@ -18,8 +18,7 @@ Frame → YOLOv8s (detect vehicles) → IoU with slot polygons → Slot status
 CS117/
 ├── config/                    # Parking lot configuration (auto-generated)
 │   └── parking_lot.json       # Slot polygons + walkway graph
-├── dataset/                   # PKLot dataset (demo video source + ground truth)
-│   └── PKLot/                 # Extracted PKLot dataset
+├── dataset/                   # PKLot dataset (ignored in git, need to download)
 ├── src/                       # Core modules
 │   ├── detector.py            # YOLOv8 vehicle detection
 │   ├── slot_classifier.py     # IoU-based slot occupancy classification
@@ -31,6 +30,8 @@ CS117/
 │   └── static/                # CSS + JS
 ├── prepare_data.py            # Parse PKLot → config + demo video + ground truth
 ├── evaluate.py                # Evaluation metrics (M1–M4)
+├── auto_setup.py              # Quick automatic config generation from video
+├── test_detections.py         # Test YOLO detections against ground truth
 ├── requirements.txt           # Python dependencies
 └── srs.md                     # Software Requirements Specification
 ```
@@ -40,12 +41,14 @@ CS117/
 ### 1. Setup Environment
 
 ```bash
-# Create conda env (already done if following setup)
+# Create conda env
 conda create -p ./venv python=3.10 -y
 uv pip install --python ./venv/bin/python -r requirements.txt
 ```
 
 ### 2. Download & Extract PKLot Dataset
+
+The dataset is ignored in git to save space. You need to download it manually:
 
 ```bash
 # Download (4.6GB)
@@ -55,6 +58,8 @@ tar -xzf dataset/PKLot.tar.gz -C dataset/
 
 ### 3. Prepare Data
 
+You can prepare data using the PKLot dataset:
+
 ```bash
 ./venv/bin/python prepare_data.py --pklot-root dataset/PKLot --lot PUCPR --weather Sunny
 ```
@@ -63,6 +68,12 @@ This generates:
 - `config/parking_lot.json` — slot polygons + walkway graph
 - `dataset/demo_video.mp4` — stitched demo video
 - `dataset/ground_truth.json` — per-frame slot labels for evaluation
+
+**Alternative (Quick Setup):**
+If you have a video file (e.g., `dataset/test.mp4`), you can use `auto_setup.py` to automatically detect parked cars and generate a rough parking lot configuration:
+```bash
+./venv/bin/python auto_setup.py
+```
 
 ### 4. Run Web Demo
 
@@ -112,3 +123,9 @@ Uses [PKLot dataset](https://web.inf.ufpr.br/vri/databases/parking-lot-database/
 > Almeida, P., Oliveira, L. S., Silva Jr, E., Britto Jr, A., Koerich, A.,
 > PKLot – A robust dataset for parking lot classification,
 > Expert Systems with Applications, 42(11):4937-4949, 2015.
+
+## Author
+
+- **Nguyễn Khang**
+- **GitHub**: [khangnk144](https://github.com/khangnk144)
+- **Email**: [24520749@gm.uit.edu.vn](mailto:24520749@gm.uit.edu.vn)
