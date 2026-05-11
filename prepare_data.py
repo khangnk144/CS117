@@ -211,9 +211,10 @@ def create_config_from_pklot(pklot_root: str,
         "slots": slots,
         "graph": {"nodes": nodes, "edges": edges},
         "model": {
-            "name": "yolov8m.pt",
-            "conf_threshold": 0.25,
-            "iou_threshold": 0.3,
+            "edge_threshold": 0.08,
+            "variance_threshold": 25.0,
+            "texture_threshold": 50.0,
+            "combined_score_threshold": 0.45,
         },
     }
 

@@ -1,5 +1,6 @@
 """
 Evaluation script for all SRS metrics (M1–M4).
+Updated for the direct slot analysis approach (no YOLO).
 """
 
 import json
@@ -10,8 +11,7 @@ import cv2
 import numpy as np
 from typing import Dict, List
 
-from src.detector import VehicleDetector
-from src.slot_classifier import SlotClassifier
+from src.slot_analyzer import SlotAnalyzer
 from src.pathfinder import ParkingGraph
 from src.pipeline import ParkingPipeline
 from prepare_data import parse_pklot_xml, find_pklot_sequences
@@ -98,6 +98,99 @@ def evaluate_m1_slot_accuracy(pipeline: ParkingPipeline,
         print(f"  PASSED    : {'✓ YES' if results['passed'] else '✗ NO'}")
         print(f"  Confusion : TP={tp} FP={fp} FN={fn} TN={tn}")
         print(f"  Frames    : {total_frames}")
+
+    return results
+
+
+def evaluate_m1_with_calibration(pipeline: ParkingPipeline,
+                                  ground_truth_path: str,
+                                  calibration_frames: int = 5,
+                                  verbose: bool = True) -> Dict:
+    """
+    M1 with calibration — Uses first N frames to calibrate the analyzer
+    baselines, then evaluates on remaining frames.
+    """
+    with open(ground_truth_path) as f:
+        ground_truth = json.load(f)
+
+    # Phase 1: Calibrate from first N frames
+    print(f"  Calibrating from first {calibration_frames} frames...")
+    for gt_entry in ground_truth[:calibration_frames]:
+        img_path = gt_entry["image_path"]
+        gt_labels = gt_entry["labels"]
+
+        if not os.path.exists(img_path):
+            continue
+
+        frame = cv2.imread(img_path)
+        if frame is None:
+            continue
+
+        pipeline.analyzer.calibrate_from_ground_truth(frame, gt_labels)
+
+    # Phase 2: Evaluate on remaining frames
+    tp, fp, fn, tn = 0, 0, 0, 0
+    total_frames = 0
+
+    for gt_entry in ground_truth[calibration_frames:]:
+        img_path = gt_entry["image_path"]
+        gt_labels = gt_entry["labels"]
+
+        if not os.path.exists(img_path):
+            continue
+
+        frame = cv2.imread(img_path)
+        if frame is None:
+            continue
+
+        result = pipeline.process_frame(frame)
+        pred_statuses = {s["id"]: s["status"] for s in result["slot_statuses"]}
+
+        for slot_id, gt_status in gt_labels.items():
+            pred_status = pred_statuses.get(slot_id)
+            if pred_status is None:
+                continue
+
+            if gt_status == "occupied" and pred_status == "occupied":
+                tp += 1
+            elif gt_status == "vacant" and pred_status == "occupied":
+                fp += 1
+            elif gt_status == "occupied" and pred_status == "vacant":
+                fn += 1
+            elif gt_status == "vacant" and pred_status == "vacant":
+                tn += 1
+
+        total_frames += 1
+        if verbose and total_frames % 20 == 0:
+            print(f"  Processed {total_frames}/{len(ground_truth) - calibration_frames} frames")
+
+    precision = tp / (tp + fp) if (tp + fp) > 0 else 0.0
+    recall = tp / (tp + fn) if (tp + fn) > 0 else 0.0
+    f1 = 2 * precision * recall / (precision + recall) if (precision + recall) > 0 else 0.0
+
+    results = {
+        "metric": "M1 - Slot-level F1-score (with calibration)",
+        "threshold": 0.90,
+        "passed": f1 >= 0.90,
+        "precision": round(precision, 4),
+        "recall": round(recall, 4),
+        "f1_score": round(f1, 4),
+        "confusion_matrix": {"TP": tp, "FP": fp, "FN": fn, "TN": tn},
+        "total_frames": total_frames,
+        "total_slot_predictions": tp + fp + fn + tn,
+        "calibration_frames": calibration_frames,
+    }
+
+    if verbose:
+        print(f"\n{'='*50}")
+        print(f"M1 Results — Slot-level Classification (Calibrated)")
+        print(f"{'='*50}")
+        print(f"  Precision : {results['precision']:.4f}")
+        print(f"  Recall    : {results['recall']:.4f}")
+        print(f"  F1-score  : {results['f1_score']:.4f}  (threshold: ≥ 0.90)")
+        print(f"  PASSED    : {'✓ YES' if results['passed'] else '✗ NO'}")
+        print(f"  Confusion : TP={tp} FP={fp} FN={fn} TN={tn}")
+        print(f"  Frames    : {total_frames} (calibrated on {calibration_frames})")
 
     return results
 
@@ -290,11 +383,13 @@ if __name__ == "__main__":
     parser.add_argument("--ground-truth", type=str,
                         default="dataset/ground_truth.json",
                         help="Path to ground truth labels")
-    parser.add_argument("--device", type=str, default="cuda",
-                        help="Device: cuda or cpu")
+    parser.add_argument("--device", type=str, default="cpu",
+                        help="Device: cpu (no GPU needed for image analysis)")
     parser.add_argument("--metrics", type=str, nargs="+",
                         default=["M1", "M2", "M3"],
                         help="Which metrics to evaluate")
+    parser.add_argument("--calibrate", action="store_true",
+                        help="Use calibration for M1 (uses first 5 GT frames)")
 
     args = parser.parse_args()
 
@@ -304,15 +399,19 @@ if __name__ == "__main__":
     all_results = {}
 
     if "M1" in args.metrics or "M3" in args.metrics:
-        print("Initializing pipeline...")
+        print("Initializing pipeline (direct image analysis — no YOLO)...")
         pipeline = ParkingPipeline(config, device=args.device)
 
     if "M1" in args.metrics:
         print("\n" + "=" * 60)
         print("Evaluating M1 — Slot Classification Accuracy")
         print("=" * 60)
-        all_results["M1"] = evaluate_m1_slot_accuracy(
-            pipeline, args.ground_truth)
+        if args.calibrate:
+            all_results["M1"] = evaluate_m1_with_calibration(
+                pipeline, args.ground_truth)
+        else:
+            all_results["M1"] = evaluate_m1_slot_accuracy(
+                pipeline, args.ground_truth)
 
     if "M2" in args.metrics:
         print("\n" + "=" * 60)
