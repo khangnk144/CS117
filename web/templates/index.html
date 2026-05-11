@@ -1,0 +1,201 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <meta name="description" content="Smart Parking Slot Occupancy Detection and Shortest-Path Navigation System using YOLOv8">
+    <title>Smart Parking — Occupancy Detection & Navigation</title>
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700;800&display=swap" rel="stylesheet">
+    <link rel="stylesheet" href="/static/css/style.css">
+</head>
+<body>
+    <div class="app-container">
+        <!-- Header -->
+        <header class="header">
+            <div class="header-left">
+                <div class="logo-icon">
+                    <svg width="28" height="28" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                        <rect x="1" y="3" width="15" height="13" rx="2"/>
+                        <polygon points="16 8 20 8 23 11 23 16 16 16 16 8"/>
+                        <circle cx="5.5" cy="18.5" r="2.5"/>
+                        <circle cx="18.5" cy="18.5" r="2.5"/>
+                    </svg>
+                </div>
+                <div>
+                    <h1>Smart Parking</h1>
+                    <p class="subtitle">YOLOv8 Occupancy Detection & Navigation</p>
+                </div>
+            </div>
+            <div class="header-right" style="display: flex; align-items: center; gap: 15px;">
+                <a href="/annotate" style="color: #89b4fa; text-decoration: none; font-weight: 600; font-size: 14px; background: rgba(137, 180, 250, 0.1); padding: 6px 12px; border-radius: 6px; border: 1px solid rgba(137, 180, 250, 0.3);">⚙️ Setup Custom Video</a>
+                <div class="status-badge" id="status-badge">
+                    <span class="status-dot"></span>
+                    <span id="status-text">Initializing...</span>
+                </div>
+            </div>
+        </header>
+
+        <!-- Main Content -->
+        <main class="main-content">
+            <!-- Left Panel: Video Feed -->
+            <section class="panel video-panel">
+                <div class="panel-header">
+                    <h2>📹 Live Detection Feed</h2>
+                    <div class="panel-actions">
+                        <span class="badge" id="fps-badge">-- ms</span>
+                    </div>
+                </div>
+                
+                <!-- Video Selector -->
+                <div class="video-selector-container" style="margin: 10px; display: flex; align-items: center; gap: 10px;">
+                    <label for="video-select" style="font-weight: 600; font-size: 14px; color: #cdd6f4;">Select Video:</label>
+                    <select id="video-select" class="select-input" style="flex: 1; padding: 6px; border-radius: 6px; background: #313244; color: #cdd6f4; border: 1px solid #45475a;">
+                        <option value="">Loading videos...</option>
+                    </select>
+                </div>
+
+                <div class="video-container">
+                    <img id="video-feed" src="" alt="Annotated parking lot feed">
+                    <div class="video-overlay" id="video-overlay">
+                        <div class="loader"></div>
+                        <p>Loading detection feed...</p>
+                    </div>
+                </div>
+                <div class="video-controls">
+                    <button class="btn btn-primary" id="btn-play" title="Play/Pause">
+                        <svg id="icon-play" width="18" height="18" viewBox="0 0 24 24" fill="currentColor"><polygon points="5 3 19 12 5 21 5 3"/></svg>
+                        <svg id="icon-pause" width="18" height="18" viewBox="0 0 24 24" fill="currentColor" style="display:none"><rect x="6" y="4" width="4" height="16"/><rect x="14" y="4" width="4" height="16"/></svg>
+                        <span id="play-text">Play</span>
+                    </button>
+                    <button class="btn btn-secondary" id="btn-step" title="Next Frame">
+                        <svg width="18" height="18" viewBox="0 0 24 24" fill="currentColor"><polygon points="5 4 15 12 5 20 5 4"/><line x1="19" y1="5" x2="19" y2="19" stroke="currentColor" stroke-width="2"/></svg>
+                        Step
+                    </button>
+                    <div class="frame-slider-container">
+                        <input type="range" id="frame-slider" class="frame-slider" min="0" max="299" value="0">
+                        <span class="frame-counter" id="frame-counter">0 / 0</span>
+                    </div>
+                </div>
+            </section>
+
+            <!-- Right Panel: Map & Controls -->
+            <section class="panel info-panel">
+                <!-- Stats Cards -->
+                <div class="stats-grid">
+                    <div class="stat-card stat-total">
+                        <div class="stat-value" id="stat-total">--</div>
+                        <div class="stat-label">Total Slots</div>
+                    </div>
+                    <div class="stat-card stat-vacant">
+                        <div class="stat-value" id="stat-vacant">--</div>
+                        <div class="stat-label">Vacant</div>
+                    </div>
+                    <div class="stat-card stat-occupied">
+                        <div class="stat-value" id="stat-occupied">--</div>
+                        <div class="stat-label">Occupied</div>
+                    </div>
+                    <div class="stat-card stat-time">
+                        <div class="stat-value" id="stat-time">--</div>
+                        <div class="stat-label">Latency (ms)</div>
+                    </div>
+                </div>
+
+                <!-- 2D Map -->
+                <div class="panel-header">
+                    <h2>🗺️ Parking Map</h2>
+                </div>
+                <div class="map-container">
+                    <canvas id="parking-map" width="640" height="360"></canvas>
+                </div>
+
+                <!-- Navigation -->
+                <div class="panel-header">
+                    <h2>🧭 Navigation</h2>
+                </div>
+                <div class="nav-section">
+                    <div class="nav-control">
+                        <label for="start-node">Starting Position:</label>
+                        <select id="start-node" class="select-input">
+                            <option value="E1">Entrance (E1)</option>
+                        </select>
+                    </div>
+                    <div class="nav-result" id="nav-result">
+                        <div class="nav-info">
+                            <span class="nav-label">Nearest Vacant:</span>
+                            <span class="nav-value" id="nav-target">--</span>
+                        </div>
+                        <div class="nav-info">
+                            <span class="nav-label">Distance:</span>
+                            <span class="nav-value" id="nav-distance">--</span>
+                        </div>
+                        <div class="nav-info">
+                            <span class="nav-label">Route:</span>
+                            <span class="nav-value nav-path" id="nav-path">--</span>
+                        </div>
+                    </div>
+                </div>
+            </section>
+        </main>
+
+        <footer class="footer">
+            <p>CS117 — Smart Parking System | YOLOv8s + Dijkstra | PKLot Dataset</p>
+        </footer>
+    </div>
+
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/socket.io/4.7.4/socket.io.min.js"></script>
+    <script src="/static/js/main.js"></script>
+    
+    <script>
+        // Fetch videos and populate dropdown
+        fetch('/api/list_videos')
+            .then(response => response.json())
+            .then(data => {
+                const select = document.getElementById('video-select');
+                select.innerHTML = '';
+                if (data.videos.length === 0) {
+                    select.innerHTML = '<option value="">No videos found in dataset/</option>';
+                    return;
+                }
+                data.videos.forEach(video => {
+                    const option = document.createElement('option');
+                    option.value = video;
+                    option.textContent = video.split('/').pop(); // Show filename
+                    select.appendChild(option);
+                });
+                
+                // Set current video if available from config
+                fetch('/api/config')
+                    .then(r => r.json())
+                    .then(cfg => {
+                        if (cfg.video_path) {
+                            select.value = cfg.video_path;
+                        }
+                    });
+            });
+
+        // Handle video selection
+        document.getElementById('video-select').addEventListener('change', function() {
+            const videoPath = this.value;
+            if (!videoPath) return;
+
+            fetch('/api/set_video', {
+                method: 'POST',
+                headers: {
+                    'Content-Type': 'application/json'
+                },
+                body: JSON.stringify({ video_path: videoPath })
+            })
+            .then(response => response.json())
+            .then(data => {
+                if (data.success) {
+                    alert('Video changed to ' + videoPath + '. Refreshing page...');
+                    window.location.reload();
+                } else {
+                    alert('Error: ' + data.error);
+                }
+            });
+        });
+    </script>
+</body>
+</html>

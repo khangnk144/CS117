@@ -1,0 +1,82 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Setup Parking Lot - Smart Parking</title>
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&display=swap" rel="stylesheet">
+    <link rel="stylesheet" href="/static/css/style.css">
+    <style>
+        .annotate-container { display: flex; height: calc(100vh - 70px); background: #1e1e2e; color: #cdd6f4; font-family: 'Inter', sans-serif;}
+        .sidebar { width: 350px; padding: 20px; background: #181825; border-right: 1px solid #313244; overflow-y: auto; }
+        .canvas-area { flex: 1; display: flex; align-items: center; justify-content: center; background: #11111b; overflow: hidden; position: relative; }
+        canvas { border: 2px solid #313244; cursor: crosshair; box-shadow: 0 4px 6px rgba(0,0,0,0.3); border-radius: 8px;}
+        .form-group { margin-bottom: 20px; }
+        .form-group label { display: block; margin-bottom: 8px; font-weight: 500; color: #bac2de; }
+        input[type="text"] { width: 100%; padding: 10px; box-sizing: border-box; background: #313244; border: 1px solid #45475a; color: white; border-radius: 6px; font-family: 'Inter', sans-serif;}
+        input[type="text"]:focus { outline: none; border-color: #89b4fa; }
+        .btn { width: 100%; padding: 12px; margin-bottom: 12px; cursor: pointer; border: none; border-radius: 6px; font-weight: 600; font-size: 14px; transition: all 0.2s; }
+        .btn-primary { background: #89b4fa; color: #11111b; }
+        .btn-primary:hover { background: #b4befe; }
+        .btn-danger { background: #f38ba8; color: #11111b; }
+        .btn-danger:hover { background: #f5e0dc; }
+        .btn-success { background: #a6e3a1; color: #11111b; }
+        .btn-success:hover { background: #94e2d5; }
+        .slot-list { margin-top: 20px; max-height: 250px; overflow-y: auto; }
+        .slot-item { display: flex; justify-content: space-between; align-items: center; background: #313244; padding: 10px 12px; margin-bottom: 8px; border-radius: 6px; font-weight: 500;}
+        .slot-item button { width: auto; padding: 4px 10px; margin: 0; background: #f38ba8; color: #11111b; border-radius: 4px; font-size: 12px;}
+        .slot-item button:hover { background: #eba0ac; }
+        h3 { margin-top: 30px; margin-bottom: 15px; color: #cdd6f4; border-bottom: 1px solid #313244; padding-bottom: 5px;}
+        .instruction { font-size: 0.9em; color: #a6adc8; margin-bottom: 15px; line-height: 1.5;}
+    </style>
+</head>
+<body>
+    <header class="header">
+        <div class="header-left">
+            <div class="logo-icon">
+                <svg width="28" height="28" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                    <rect x="1" y="3" width="15" height="13" rx="2"/>
+                    <polygon points="16 8 20 8 23 11 23 16 16 16 16 8"/>
+                    <circle cx="5.5" cy="18.5" r="2.5"/>
+                    <circle cx="18.5" cy="18.5" r="2.5"/>
+                </svg>
+            </div>
+            <div>
+                <h1>Setup New Parking Lot</h1>
+                <p class="subtitle">Draw slots directly on your video frame</p>
+            </div>
+        </div>
+        <div class="header-right">
+            <a href="/" style="color: #89b4fa; text-decoration: none; font-weight: 600;">← Back to Dashboard</a>
+        </div>
+    </header>
+    <div class="annotate-container">
+        <div class="sidebar">
+            <h3>1. Load Source</h3>
+            <div class="form-group">
+                <label>Video or Image Path (Server-side):</label>
+                <input type="text" id="source-path" placeholder="/path/to/video.mp4" value="dataset/demo_video.mp4">
+            </div>
+            <button class="btn btn-primary" id="btn-load">Load First Frame</button>
+
+            <h3>2. Draw Slots</h3>
+            <p class="instruction">Click 4 points on the image to define a parking slot polygon. Click clockwise or counter-clockwise.</p>
+            <button class="btn btn-danger" id="btn-clear-current">Clear Current Points</button>
+            
+            <div class="slot-list" id="slot-list">
+                <!-- Slots will appear here -->
+            </div>
+
+            <h3>3. Generate Config</h3>
+            <p class="instruction">We will automatically generate the walkway graph based on the slots you draw.</p>
+            <button class="btn btn-success" id="btn-save">Save & Generate Graph</button>
+            <p id="save-status" style="font-size: 0.9em; margin-top: 10px; color: #a6e3a1; text-align: center; font-weight: 500;"></p>
+        </div>
+        <div class="canvas-area">
+            <canvas id="annotate-canvas"></canvas>
+            <div id="loading-overlay" style="display:none; position:absolute; color:white; font-size:1.2rem; background:rgba(0,0,0,0.5); padding:20px; border-radius:8px;">Loading image...</div>
+        </div>
+    </div>
+    <script src="/static/js/annotate.js"></script>
+</body>
+</html>
