@@ -1,6 +1,6 @@
 """
 Evaluation script for all SRS metrics (M1–M4).
-Updated for the direct slot analysis approach (no YOLO).
+Updated for the YOLOv8-based pipeline.
 """
 
 import json
@@ -11,29 +11,19 @@ import cv2
 import numpy as np
 from typing import Dict, List
 
-from src.slot_analyzer import SlotAnalyzer
 from src.pathfinder import ParkingGraph
 from src.pipeline import ParkingPipeline
-from prepare_data import parse_pklot_xml, find_pklot_sequences
-
 
 def evaluate_m1_slot_accuracy(pipeline: ParkingPipeline,
                                ground_truth_path: str,
                                verbose: bool = True) -> Dict:
     """
     M1 — Parking slot status classification accuracy (slot-level).
-
-    Computes Precision, Recall, F1-score for slot occupancy classification.
     Threshold: F1-score ≥ 0.90
-
-    Args:
-        pipeline: Initialized ParkingPipeline.
-        ground_truth_path: Path to ground_truth.json.
-        verbose: Print per-frame results.
-
-    Returns:
-        Dict with precision, recall, f1, confusion matrix.
     """
+    if not os.path.exists(ground_truth_path):
+        return {"error": "ground_truth.json not found"}
+        
     with open(ground_truth_path) as f:
         ground_truth = json.load(f)
 
@@ -79,7 +69,7 @@ def evaluate_m1_slot_accuracy(pipeline: ParkingPipeline,
     results = {
         "metric": "M1 - Slot-level F1-score",
         "threshold": 0.90,
-        "passed": f1 >= 0.90,
+        "passed": bool(f1 >= 0.90),
         "precision": round(precision, 4),
         "recall": round(recall, 4),
         "f1_score": round(f1, 4),
@@ -101,119 +91,12 @@ def evaluate_m1_slot_accuracy(pipeline: ParkingPipeline,
 
     return results
 
-
-def evaluate_m1_with_calibration(pipeline: ParkingPipeline,
-                                  ground_truth_path: str,
-                                  calibration_frames: int = 5,
-                                  verbose: bool = True) -> Dict:
-    """
-    M1 with calibration — Uses first N frames to calibrate the analyzer
-    baselines, then evaluates on remaining frames.
-    """
-    with open(ground_truth_path) as f:
-        ground_truth = json.load(f)
-
-    # Phase 1: Calibrate from first N frames
-    print(f"  Calibrating from first {calibration_frames} frames...")
-    for gt_entry in ground_truth[:calibration_frames]:
-        img_path = gt_entry["image_path"]
-        gt_labels = gt_entry["labels"]
-
-        if not os.path.exists(img_path):
-            continue
-
-        frame = cv2.imread(img_path)
-        if frame is None:
-            continue
-
-        pipeline.analyzer.calibrate_from_ground_truth(frame, gt_labels)
-
-    # Phase 2: Evaluate on remaining frames
-    tp, fp, fn, tn = 0, 0, 0, 0
-    total_frames = 0
-
-    for gt_entry in ground_truth[calibration_frames:]:
-        img_path = gt_entry["image_path"]
-        gt_labels = gt_entry["labels"]
-
-        if not os.path.exists(img_path):
-            continue
-
-        frame = cv2.imread(img_path)
-        if frame is None:
-            continue
-
-        result = pipeline.process_frame(frame)
-        pred_statuses = {s["id"]: s["status"] for s in result["slot_statuses"]}
-
-        for slot_id, gt_status in gt_labels.items():
-            pred_status = pred_statuses.get(slot_id)
-            if pred_status is None:
-                continue
-
-            if gt_status == "occupied" and pred_status == "occupied":
-                tp += 1
-            elif gt_status == "vacant" and pred_status == "occupied":
-                fp += 1
-            elif gt_status == "occupied" and pred_status == "vacant":
-                fn += 1
-            elif gt_status == "vacant" and pred_status == "vacant":
-                tn += 1
-
-        total_frames += 1
-        if verbose and total_frames % 20 == 0:
-            print(f"  Processed {total_frames}/{len(ground_truth) - calibration_frames} frames")
-
-    precision = tp / (tp + fp) if (tp + fp) > 0 else 0.0
-    recall = tp / (tp + fn) if (tp + fn) > 0 else 0.0
-    f1 = 2 * precision * recall / (precision + recall) if (precision + recall) > 0 else 0.0
-
-    results = {
-        "metric": "M1 - Slot-level F1-score (with calibration)",
-        "threshold": 0.90,
-        "passed": f1 >= 0.90,
-        "precision": round(precision, 4),
-        "recall": round(recall, 4),
-        "f1_score": round(f1, 4),
-        "confusion_matrix": {"TP": tp, "FP": fp, "FN": fn, "TN": tn},
-        "total_frames": total_frames,
-        "total_slot_predictions": tp + fp + fn + tn,
-        "calibration_frames": calibration_frames,
-    }
-
-    if verbose:
-        print(f"\n{'='*50}")
-        print(f"M1 Results — Slot-level Classification (Calibrated)")
-        print(f"{'='*50}")
-        print(f"  Precision : {results['precision']:.4f}")
-        print(f"  Recall    : {results['recall']:.4f}")
-        print(f"  F1-score  : {results['f1_score']:.4f}  (threshold: ≥ 0.90)")
-        print(f"  PASSED    : {'✓ YES' if results['passed'] else '✗ NO'}")
-        print(f"  Confusion : TP={tp} FP={fp} FN={fn} TN={tn}")
-        print(f"  Frames    : {total_frames} (calibrated on {calibration_frames})")
-
-    return results
-
-
 def evaluate_m2_navigation(graph: ParkingGraph,
                             test_scenarios: List[Dict],
                             verbose: bool = True) -> Dict:
     """
     M2 — Nearest slot selection accuracy.
-
-    Tests whether the pathfinding algorithm correctly selects the nearest
-    vacant slot. Threshold: ≥ 95%
-
-    Args:
-        graph: ParkingGraph instance.
-        test_scenarios: List of dicts with:
-            - 'start': starting node ID
-            - 'vacant_slots': list of vacant slot IDs
-            - 'expected_slots': list of acceptable target slots (ground truth)
-        verbose: Print per-scenario results.
-
-    Returns:
-        Dict with accuracy and per-scenario details.
+    Threshold: ≥ 95%
     """
     correct = 0
     total = len(test_scenarios)
@@ -234,7 +117,7 @@ def evaluate_m2_navigation(graph: ParkingGraph,
             "start": scenario["start"],
             "selected": selected,
             "expected": expected_set,
-            "correct": is_correct,
+            "correct": bool(is_correct),
             "distance": result["distance"],
         })
 
@@ -243,7 +126,7 @@ def evaluate_m2_navigation(graph: ParkingGraph,
     results = {
         "metric": "M2 - Navigation Accuracy",
         "threshold": 0.95,
-        "passed": accuracy >= 0.95,
+        "passed": bool(accuracy >= 0.95),
         "accuracy": round(accuracy, 4),
         "correct": correct,
         "total": total,
@@ -267,19 +150,11 @@ def evaluate_m3_response_time(pipeline: ParkingPipeline,
                                 verbose: bool = True) -> Dict:
     """
     M3 — Response time.
-
-    Measures average end-to-end processing time per frame.
     Threshold: ≤ 2 seconds.
-
-    Args:
-        pipeline: Initialized ParkingPipeline.
-        ground_truth_path: Path to ground_truth.json (for test frames).
-        num_trials: Number of frames to time.
-        verbose: Print results.
-
-    Returns:
-        Dict with avg time and per-trial times.
     """
+    if not os.path.exists(ground_truth_path):
+        return {"error": "ground_truth.json not found"}
+        
     with open(ground_truth_path) as f:
         ground_truth = json.load(f)
 
@@ -307,7 +182,7 @@ def evaluate_m3_response_time(pipeline: ParkingPipeline,
     results = {
         "metric": "M3 - Avg Response Time",
         "threshold_seconds": 2.0,
-        "passed": avg_time <= 2.0,
+        "passed": bool(avg_time <= 2.0),
         "avg_time_seconds": round(float(avg_time), 4),
         "max_time_seconds": round(float(max_time), 4),
         "min_time_seconds": round(float(min_time), 4),
@@ -329,10 +204,9 @@ def evaluate_m3_response_time(pipeline: ParkingPipeline,
 def generate_navigation_test_scenarios(config: Dict,
                                         ground_truth_path: str,
                                         num_scenarios: int = 30) -> List[Dict]:
-    """
-    Auto-generate navigation test scenarios from ground truth data.
-    Ensures ≥ 5 scenarios with tied distances.
-    """
+    if not os.path.exists(ground_truth_path):
+        return []
+        
     with open(ground_truth_path) as f:
         ground_truth = json.load(f)
 
@@ -340,7 +214,6 @@ def generate_navigation_test_scenarios(config: Dict,
     slot_ids = [s["id"] for s in config["slots"]]
     scenarios = []
 
-    # Sample diverse frames for different occupancy patterns
     step = max(1, len(ground_truth) // num_scenarios)
     for i in range(0, len(ground_truth), step):
         if len(scenarios) >= num_scenarios:
@@ -354,12 +227,10 @@ def generate_navigation_test_scenarios(config: Dict,
         if not vacant_slots:
             continue
 
-        # Compute ground truth using Dijkstra
         nav = graph.find_nearest_vacant("E1", vacant_slots)
         if nav["target_slot"] is None:
             continue
 
-        # Find all slots at the same min distance (for tie scenarios)
         dist, _ = graph.dijkstra("E1")
         min_d = nav["distance"]
         expected = sorted([sid for sid in vacant_slots
@@ -383,13 +254,11 @@ if __name__ == "__main__":
     parser.add_argument("--ground-truth", type=str,
                         default="dataset/ground_truth.json",
                         help="Path to ground truth labels")
-    parser.add_argument("--device", type=str, default="cpu",
-                        help="Device: cpu (no GPU needed for image analysis)")
+    parser.add_argument("--model", type=str, default="yolov8m.pt",
+                        help="YOLO model to use")
     parser.add_argument("--metrics", type=str, nargs="+",
                         default=["M1", "M2", "M3"],
                         help="Which metrics to evaluate")
-    parser.add_argument("--calibrate", action="store_true",
-                        help="Use calibration for M1 (uses first 5 GT frames)")
 
     args = parser.parse_args()
 
@@ -399,19 +268,14 @@ if __name__ == "__main__":
     all_results = {}
 
     if "M1" in args.metrics or "M3" in args.metrics:
-        print("Initializing pipeline (direct image analysis — no YOLO)...")
-        pipeline = ParkingPipeline(config, device=args.device)
+        print(f"Initializing YOLOv8 pipeline ({args.model})...")
+        pipeline = ParkingPipeline(config, device="cuda", model_name=args.model)
 
     if "M1" in args.metrics:
         print("\n" + "=" * 60)
         print("Evaluating M1 — Slot Classification Accuracy")
         print("=" * 60)
-        if args.calibrate:
-            all_results["M1"] = evaluate_m1_with_calibration(
-                pipeline, args.ground_truth)
-        else:
-            all_results["M1"] = evaluate_m1_slot_accuracy(
-                pipeline, args.ground_truth)
+        all_results["M1"] = evaluate_m1_slot_accuracy(pipeline, args.ground_truth)
 
     if "M2" in args.metrics:
         print("\n" + "=" * 60)
@@ -420,7 +284,10 @@ if __name__ == "__main__":
         graph = ParkingGraph(config["graph"])
         scenarios = generate_navigation_test_scenarios(
             config, args.ground_truth, num_scenarios=30)
-        all_results["M2"] = evaluate_m2_navigation(graph, scenarios)
+        if scenarios:
+            all_results["M2"] = evaluate_m2_navigation(graph, scenarios)
+        else:
+            print("No scenarios generated for M2.")
 
     if "M3" in args.metrics:
         print("\n" + "=" * 60)
@@ -441,5 +308,8 @@ if __name__ == "__main__":
     print("SUMMARY")
     print("=" * 60)
     for metric_id, result in all_results.items():
-        status = "✓ PASS" if result["passed"] else "✗ FAIL"
-        print(f"  {result['metric']}: {status}")
+        if "passed" in result:
+            status = "✓ PASS" if result["passed"] else "✗ FAIL"
+            print(f"  {result.get('metric', metric_id)}: {status}")
+        else:
+            print(f"  {metric_id}: Evaluation error or skipped")

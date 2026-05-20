@@ -1,58 +1,50 @@
 """
-End-to-end pipeline using direct slot image analysis.
+End-to-end pipeline using YOLOv8 object detection.
 
-Replaces the YOLO-based detection approach with direct per-slot
-image analysis using classical CV features (edges, texture, color).
-This is much more reliable for overhead fixed-camera parking lots.
+Uses YOLOv8 to detect vehicles and computes Intersection over Area (IoA)
+with parking slot polygons to determine occupancy.
 """
 
 import cv2
 import numpy as np
 import time
-from typing import Dict, List, Optional, Tuple, Any
+from typing import Dict, List, Optional, Tuple
 
-from src.slot_analyzer import SlotAnalyzer
+from src.detector import VehicleDetector
 from src.pathfinder import ParkingGraph
 from shapely.geometry import Polygon, Point
 
 
 class ParkingPipeline:
-    """Full parking lot occupancy detection and navigation pipeline."""
+    """Full parking lot occupancy detection and navigation pipeline using YOLOv8."""
 
-    def __init__(self, config: Dict, device: str = "cpu"):
+    def __init__(self, config: Dict, device: str = "cuda",
+                 model_name: str = "yolov8m.pt"):
         """
         Initialize the parking pipeline.
 
         Args:
             config: Parking lot configuration dict.
-            device: Ignored (no GPU needed), kept for API compatibility.
+            device: 'cpu' or 'cuda' (for YOLO).
+            model_name: YOLO model to use.
         """
-        analysis_cfg = config.get("model", {})
-        edge_thresh = analysis_cfg.get("edge_threshold", 0.08)
-        variance_thresh = analysis_cfg.get("variance_threshold", 25.0)
-        texture_thresh = analysis_cfg.get("texture_threshold", 50.0)
-        score_thresh = analysis_cfg.get("combined_score_threshold", 0.45)
-
-        self.analyzer = SlotAnalyzer(
-            slots=config["slots"],
-            edge_threshold=edge_thresh,
-            variance_threshold=variance_thresh,
-            texture_threshold=texture_thresh,
-            combined_score_threshold=score_thresh,
-            use_adaptive=True,
-        )
-        self.graph = ParkingGraph(config["graph"])
         self.config = config
+        self.slots_config = config["slots"]
+        
+        # Initialize YOLO detector
+        self.detector = VehicleDetector(model_name=model_name, device=device)
+
+        # Navigation graph
+        self.graph = ParkingGraph(config["graph"])
 
         # Cache latest results
         self.last_slot_statuses = []
         self.last_nav_result = {}
         self.last_processing_time = 0.0
 
-        # Calibration state
-        self._calibrated = False
-        self._calibration_frames = 0
-        self._max_calibration_frames = 5  # Auto-calibrate from first N frames
+        # Temporal smoothing for slot statuses
+        self._status_history: Dict[str, List[str]] = {}
+        self._temporal_window = 3  # Number of frames to smooth over
 
     def process_frame(self, frame: np.ndarray,
                       start_node: str = "E1",
@@ -70,18 +62,44 @@ class ParkingPipeline:
         """
         t_start = time.perf_counter()
 
-        # Auto-calibrate from first few frames if no baseline exists
-        if not self._calibrated and self._calibration_frames < self._max_calibration_frames:
-            self._calibration_frames += 1
-            if self._calibration_frames == 1:
-                # Use first frame as initial baseline (assume we need it)
-                # The analyzer will work with absolute thresholds if no baseline set
-                pass
+        # Step 1: Detect vehicles
+        detections = self.detector.detect(frame)
 
-        # Step 1: Classify all slots directly from the frame
-        slot_statuses = self.analyzer.classify_all(frame)
+        # Step 2: Determine slot occupancy using IoA (Intersection over Area)
+        raw_statuses = []
+        for slot in self.slots_config:
+            slot_poly = Polygon(slot["polygon"])
+            is_occupied = False
+            
+            for det in detections:
+                x1, y1, x2, y2 = det["bbox"]
+                bbox_poly = Polygon([(x1, y1), (x2, y1), (x2, y2), (x1, y2)])
+                
+                # Compute intersection
+                try:
+                    intersection_area = slot_poly.intersection(bbox_poly).area
+                    ioa = intersection_area / slot_poly.area
+                    
+                    # Alternatively, check if the bottom center of the bbox is inside the slot
+                    bottom_center = Point((x1 + x2) / 2, y2)
+                    
+                    # A slot is occupied if there's significant overlap or the vehicle's bottom center is in it
+                    if ioa > 0.35 or (intersection_area > 0 and slot_poly.contains(bottom_center)):
+                        is_occupied = True
+                        break
+                except Exception as e:
+                    print(f"Error computing intersection: {e}")
+            
+            raw_statuses.append({
+                "id": slot["id"],
+                "status": "occupied" if is_occupied else "vacant",
+                "polygon": slot["polygon"]
+            })
 
-        # Step 2: Navigation
+        # Step 2.5: Temporal smoothing (reduces flicker)
+        slot_statuses = self._apply_temporal_smoothing(raw_statuses)
+
+        # Step 3: Navigation
         start = start_node
         if user_position:
             start = self._create_temporary_node(user_position)
@@ -98,7 +116,7 @@ class ParkingPipeline:
 
         # Annotation
         annotated = self.annotate_frame(
-            frame.copy(), slot_statuses, nav_result
+            frame.copy(), slot_statuses, nav_result, detections
         )
 
         self.last_slot_statuses = slot_statuses
@@ -110,7 +128,7 @@ class ParkingPipeline:
         vacant_count = total_count - occupied_count
 
         return {
-            "detections": [],  # No vehicle detections (direct analysis)
+            "detections": detections,
             "slot_statuses": slot_statuses,
             "navigation": nav_result,
             "processing_time_ms": round(processing_time_ms, 2),
@@ -124,9 +142,44 @@ class ParkingPipeline:
             },
         }
 
-    def annotate_frame(self, frame, slot_statuses, nav_result):
-        """Draw slot overlays and navigation info on the frame."""
+    def _apply_temporal_smoothing(self, slot_statuses: List[Dict]) -> List[Dict]:
+        """
+        Apply temporal smoothing to reduce status flicker.
+        """
+        smoothed = []
+        for slot in slot_statuses:
+            sid = slot["id"]
+            if sid not in self._status_history:
+                self._status_history[sid] = []
+
+            self._status_history[sid].append(slot["status"])
+            if len(self._status_history[sid]) > self._temporal_window:
+                self._status_history[sid].pop(0)
+
+            # Majority vote
+            history = self._status_history[sid]
+            occupied_votes = sum(1 for s in history if s == "occupied")
+            vacant_votes = len(history) - occupied_votes
+
+            smoothed_status = "occupied" if occupied_votes > vacant_votes else "vacant"
+
+            result = slot.copy()
+            result["status"] = smoothed_status
+            smoothed.append(result)
+
+        return smoothed
+
+    def annotate_frame(self, frame, slot_statuses, nav_result, detections):
+        """Draw slot overlays, bounding boxes, and navigation info on the frame."""
         target_slot = nav_result.get("target_slot")
+
+        # Draw vehicle bounding boxes
+        for det in detections:
+            x1, y1, x2, y2 = map(int, det["bbox"])
+            conf = det["confidence"]
+            cv2.rectangle(frame, (x1, y1), (x2, y2), (255, 165, 0), 2)  # Orange for vehicles
+            cv2.putText(frame, f"{conf:.2f}", (x1, y1 - 5),
+                        cv2.FONT_HERSHEY_SIMPLEX, 0.5, (255, 165, 0), 1)
 
         for slot in slot_statuses:
             pts = np.array(slot["polygon"], dtype=np.int32)

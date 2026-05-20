@@ -3,7 +3,7 @@ Flask web application for the Smart Parking System.
 Serves annotated video, 2D parking map, and navigation info.
 Click-to-set start position on the video feed.
 
-Updated for direct slot image analysis (no YOLO required).
+Updated for YOLOv8 object detection based slot analysis.
 """
 
 import os
@@ -14,6 +14,7 @@ import cv2
 import base64
 import numpy as np
 import threading
+import argparse
 from flask import Flask, render_template, jsonify, request, Response, redirect
 from flask_socketio import SocketIO
 
@@ -42,7 +43,7 @@ is_playing = False
 video_lock = threading.Lock()
 
 
-def load_system():
+def load_system(model_name="yolov8n-visdrone.pt"):
     global pipeline, frame_pairs, config, video_cap, video_path, total_video_frames
 
     config_path = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "config", "parking_lot.json"))
@@ -54,10 +55,12 @@ def load_system():
     with open(config_path) as f:
         config = json.load(f)
 
-    # No GPU needed for direct image analysis
-    device = "cpu"
-    print(f"Initializing pipeline (direct image analysis, device: {device})")
-    pipeline = ParkingPipeline(config, device=device)
+    print(f"Initializing YOLO pipeline (model: {model_name}, device: cuda)")
+    pipeline = ParkingPipeline(
+        config,
+        device="cuda",
+        model_name=model_name
+    )
 
     if "video_path" in config and config["video_path"]:
         v_path = config["video_path"]
@@ -133,42 +136,58 @@ def extract_frame():
 def save_config():
     data = request.get_json()
     slots = data.get("slots", [])
+    custom_nodes = data.get("nodes", [])
+    custom_edges = data.get("edges", [])
     img_size = data.get("image_size", {"width": 1280, "height": 720})
     video_path = data.get("video_path", "")
-    w, h = img_size["width"], img_size["height"]
 
-    nodes = [{"id": "E1", "type": "entrance", "x": w // 2, "y": 30}]
-    num_waypoints = min(len(slots), 10)
-    wp_y = h // 2
+    nodes = []
     edges = []
-    for i in range(num_waypoints):
-        wp_x = int(w * (i + 1) / (num_waypoints + 1))
-        wp_id = f"W{i + 1}"
-        nodes.append({"id": wp_id, "type": "waypoint", "x": wp_x, "y": wp_y})
-        if i > 0:
-            prev_wp = f"W{i}"
-            dist = abs(wp_x - int(w * i / (num_waypoints + 1)))
-            edges.append({"from": prev_wp, "to": wp_id, "weight": round(dist * 0.05, 1)})
-    if num_waypoints > 0:
-        edges.append({"from": "E1", "to": "W1", "weight": round(abs(wp_y - 30) * 0.05, 1)})
 
-    for slot in slots:
-        polygon = slot["polygon"]
-        cx = int(sum(p[0] for p in polygon) / 4)
-        cy = int(sum(p[1] for p in polygon) / 4)
-        nodes.append({"id": slot["id"], "type": "slot", "x": cx, "y": cy})
-        min_dist = float("inf")
-        nearest_wp = "W1"
+    if custom_nodes or custom_edges:
+        nodes.extend(custom_nodes)
+        edges.extend(custom_edges)
+        
+        # Add slots as nodes to the graph
+        for slot in slots:
+            polygon = slot["polygon"]
+            cx = int(sum(p[0] for p in polygon) / 4)
+            cy = int(sum(p[1] for p in polygon) / 4)
+            nodes.append({"id": slot["id"], "type": "slot", "x": cx, "y": cy})
+    else:
+        w, h = img_size["width"], img_size["height"]
+        nodes = [{"id": "E1", "type": "entrance", "x": w // 2, "y": 30}]
+        num_waypoints = min(len(slots), 10)
+        wp_y = h // 2
+        
         for i in range(num_waypoints):
             wp_x = int(w * (i + 1) / (num_waypoints + 1))
-            dist = ((cx - wp_x) ** 2 + (cy - wp_y) ** 2) ** 0.5
-            if dist < min_dist:
-                min_dist = dist
-                nearest_wp = f"W{i + 1}"
-        edges.append({
-            "from": slot["id"], "to": nearest_wp,
-            "weight": round(min_dist * 0.05, 1)
-        })
+            wp_id = f"W{i + 1}"
+            nodes.append({"id": wp_id, "type": "waypoint", "x": wp_x, "y": wp_y})
+            if i > 0:
+                prev_wp = f"W{i}"
+                dist = abs(wp_x - int(w * i / (num_waypoints + 1)))
+                edges.append({"from": prev_wp, "to": wp_id, "weight": round(dist * 0.05, 1)})
+        if num_waypoints > 0:
+            edges.append({"from": "E1", "to": "W1", "weight": round(abs(wp_y - 30) * 0.05, 1)})
+
+        for slot in slots:
+            polygon = slot["polygon"]
+            cx = int(sum(p[0] for p in polygon) / 4)
+            cy = int(sum(p[1] for p in polygon) / 4)
+            nodes.append({"id": slot["id"], "type": "slot", "x": cx, "y": cy})
+            min_dist = float("inf")
+            nearest_wp = "W1"
+            for i in range(num_waypoints):
+                wp_x = int(w * (i + 1) / (num_waypoints + 1))
+                dist = ((cx - wp_x) ** 2 + (cy - wp_y) ** 2) ** 0.5
+                if dist < min_dist:
+                    min_dist = dist
+                    nearest_wp = f"W{i + 1}"
+            edges.append({
+                "from": slot["id"], "to": nearest_wp,
+                "weight": round(min_dist * 0.05, 1)
+            })
 
     config_data = {
         "parking_lot": "CustomLot",
@@ -331,28 +350,8 @@ def set_user_position():
 
 @app.route("/api/calibrate", methods=["POST"])
 def calibrate_analyzer():
-    """Calibrate the analyzer using the current frame as empty reference."""
-    if pipeline is None:
-        return jsonify({"error": "System not initialized"}), 500
-
-    frame = None
-    if video_cap is not None:
-        with video_lock:
-            video_cap.set(cv2.CAP_PROP_POS_FRAMES, current_frame_idx)
-            ret, frame = video_cap.read()
-        if not ret:
-            return jsonify({"error": "Cannot read current frame"}), 500
-    elif frame_pairs:
-        img_path, _ = frame_pairs[current_frame_idx]
-        frame = cv2.imread(img_path)
-    else:
-        return jsonify({"error": "No video source available"}), 500
-
-    if frame is None:
-        return jsonify({"error": "Cannot read frame"}), 500
-
-    pipeline.analyzer.auto_calibrate(frame)
-    return jsonify({"success": True, "message": "Calibrated using current frame as empty baseline"})
+    """Calibration is not used in YOLO mode."""
+    return jsonify({"success": True, "message": "Calibration not needed for YOLO mode"})
 
 @socketio.on("connect")
 def handle_connect():
@@ -410,7 +409,7 @@ def handle_stop_stream():
 if __name__ == "__main__":
     print("=" * 60)
     print("Smart Parking System — Web Interface")
-    print("(Direct Image Analysis — No YOLO Required)")
+    print("(YOLOv8 Object Detection)")
     print("=" * 60)
     if not load_system():
         print("Started in Setup Mode. Visit http://localhost:5005/annotate to configure.")
