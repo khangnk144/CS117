@@ -1,6 +1,6 @@
 """
 Evaluation script for all SRS metrics (M1–M4).
-Updated for the YOLOv8-based pipeline.
+Evaluates the calibrated hybrid occupancy pipeline.
 """
 
 import json
@@ -19,7 +19,7 @@ def evaluate_m1_slot_accuracy(pipeline: ParkingPipeline,
                                verbose: bool = True) -> Dict:
     """
     M1 — Parking slot status classification accuracy (slot-level).
-    Threshold: F1-score ≥ 0.90
+    Threshold: F1-score ≥ 0.95.
     """
     if not os.path.exists(ground_truth_path):
         return {"error": "ground_truth.json not found"}
@@ -28,6 +28,8 @@ def evaluate_m1_slot_accuracy(pipeline: ParkingPipeline,
         ground_truth = json.load(f)
 
     tp, fp, fn, tn = 0, 0, 0, 0
+    unknown_predictions = 0
+    total_predictions = 0
     total_frames = 0
 
     for gt_entry in ground_truth:
@@ -48,8 +50,13 @@ def evaluate_m1_slot_accuracy(pipeline: ParkingPipeline,
             pred_status = pred_statuses.get(slot_id)
             if pred_status is None:
                 continue
+            total_predictions += 1
 
-            if gt_status == "occupied" and pred_status == "occupied":
+            if pred_status == "unknown":
+                unknown_predictions += 1
+                if gt_status == "occupied":
+                    fn += 1
+            elif gt_status == "occupied" and pred_status == "occupied":
                 tp += 1
             elif gt_status == "vacant" and pred_status == "occupied":
                 fp += 1
@@ -68,14 +75,22 @@ def evaluate_m1_slot_accuracy(pipeline: ParkingPipeline,
 
     results = {
         "metric": "M1 - Slot-level F1-score",
-        "threshold": 0.90,
-        "passed": bool(f1 >= 0.90),
+        "threshold": 0.95,
+        "minimum_coverage": 0.95,
+        "passed": bool(
+            f1 >= 0.95
+            and 1.0 - unknown_predictions / max(total_predictions, 1) >= 0.95
+        ),
         "precision": round(precision, 4),
         "recall": round(recall, 4),
         "f1_score": round(f1, 4),
         "confusion_matrix": {"TP": tp, "FP": fp, "FN": fn, "TN": tn},
         "total_frames": total_frames,
-        "total_slot_predictions": tp + fp + fn + tn,
+        "total_slot_predictions": total_predictions,
+        "unknown_predictions": unknown_predictions,
+        "coverage": round(
+            1.0 - unknown_predictions / max(total_predictions, 1), 4
+        ),
     }
 
     if verbose:
@@ -84,7 +99,8 @@ def evaluate_m1_slot_accuracy(pipeline: ParkingPipeline,
         print(f"{'='*50}")
         print(f"  Precision : {results['precision']:.4f}")
         print(f"  Recall    : {results['recall']:.4f}")
-        print(f"  F1-score  : {results['f1_score']:.4f}  (threshold: ≥ 0.90)")
+        print(f"  F1-score  : {results['f1_score']:.4f}  (threshold: ≥ 0.95)")
+        print(f"  Coverage  : {results['coverage']:.4f}  (unknown={unknown_predictions})")
         print(f"  PASSED    : {'✓ YES' if results['passed'] else '✗ NO'}")
         print(f"  Confusion : TP={tp} FP={fp} FN={fn} TN={tn}")
         print(f"  Frames    : {total_frames}")
@@ -254,8 +270,15 @@ if __name__ == "__main__":
     parser.add_argument("--ground-truth", type=str,
                         default="dataset/ground_truth.json",
                         help="Path to ground truth labels")
-    parser.add_argument("--model", type=str, default="yolov8m.pt",
-                        help="YOLO model to use")
+    parser.add_argument("--model", type=str, default=None,
+                        help="Optional Ultralytics detector weights")
+    parser.add_argument("--device", type=str, default="auto",
+                        choices=["auto", "cpu", "cuda"],
+                        help="Detector inference device")
+    parser.add_argument("--empty-reference", type=str, default=None,
+                        help="Image showing the configured slots empty")
+    parser.add_argument("--calibration-video", type=str, default=None,
+                        help="Video scanned to auto-learn empty slot references")
     parser.add_argument("--metrics", type=str, nargs="+",
                         default=["M1", "M2", "M3"],
                         help="Which metrics to evaluate")
@@ -268,8 +291,21 @@ if __name__ == "__main__":
     all_results = {}
 
     if "M1" in args.metrics or "M3" in args.metrics:
-        print(f"Initializing YOLOv8 pipeline ({args.model})...")
-        pipeline = ParkingPipeline(config, device="cuda", model_name=args.model)
+        print("Initializing calibrated hybrid occupancy pipeline...")
+        pipeline = ParkingPipeline(config, device=args.device, model_name=args.model)
+        if args.calibration_video:
+            report = pipeline.auto_calibrate_video(args.calibration_video)
+            print(
+                f"Auto-calibrated {len(report['calibrated_slots'])}/"
+                f"{len(config['slots'])} slots before evaluation."
+            )
+            if report.get("warning"):
+                print(f"Calibration warning: {report['warning']}")
+        if args.empty_reference:
+            reference_frame = cv2.imread(args.empty_reference)
+            if reference_frame is None:
+                raise SystemExit(f"Cannot read empty reference: {args.empty_reference}")
+            pipeline.calibrate(reference_frame)
 
     if "M1" in args.metrics:
         print("\n" + "=" * 60)

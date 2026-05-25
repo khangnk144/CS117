@@ -37,11 +37,41 @@ if not os.path.exists("config/parking_lot.json"):
         "image_size": {"width": w, "height": h},
         "slots": [],
         "graph": {"nodes": [{"id": "E1", "type": "entrance", "x": w // 2, "y": 30}], "edges": []},
-        "model": {
-            "edge_threshold": 0.08,
-            "variance_threshold": 25.0,
-            "texture_threshold": 50.0,
-            "combined_score_threshold": 0.45,
+        "inference": {
+            "mode": "hybrid",
+            "detector": {
+                "enabled": True,
+                "model": "yolo26s.pt",
+                "device": "auto",
+                "confidence_threshold": 0.25,
+                "image_size": 1280,
+                "overlap_occupied_threshold": 0.30,
+                "tracking_enabled": True,
+                "tracker": "bytetrack.yaml",
+            },
+            "appearance": {
+                "enabled": True,
+                "background_difference_threshold": 0.08,
+                "occupied_threshold": 0.58,
+                "vacant_threshold": 0.30,
+                "allow_uncalibrated_vacant": False,
+            },
+            "temporal": {
+                "enabled": True,
+                "occupied_confirm_frames": 2,
+                "vacant_confirm_frames": 4,
+            },
+            "stabilization": {"enabled": False},
+            "calibration": {
+                "reference_image": "",
+                "references": [],
+                "automatic": {
+                    "enabled": True,
+                    "scan_frames": 120,
+                    "min_samples": 8,
+                    "require_detector": True,
+                },
+            },
         },
     }
     os.makedirs("config", exist_ok=True)

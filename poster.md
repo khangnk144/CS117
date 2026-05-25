@@ -98,7 +98,7 @@ Video giám sát và sơ đồ bãi đỗ 2D phải được cập nhật đồn
 
 ### Nhận diện trạng thái
 
-Dùng camera AI (YOLOv8) để cập nhật liên tục các ô đỗ trống/đã có xe (trên mặt bằng 2D).
+Dùng camera cố định, tự học baseline từ video bằng YOLO26 + ByteTrack, để cập nhật liên tục trạng thái ô đỗ trên mặt bằng 2D.
 
 ### Tìm đường & Giữ chỗ
 
@@ -149,22 +149,22 @@ Bài toán chính: **Smart Parking Slot Occupancy Detection & Shortest-Path Navi
                ┌───────────────────┤                      ├───────────────────┐
                ▼                   ▼                      ▼                   ▼
  ┌──────────────────┐  ┌───────────────────┐  ┌───────────────────┐  ┌────────────────────┐
- │ SP1: Vehicle     │  │ SP2: Slot         │  │ SP3: Shortest-    │  │ SP4: Visualization │
- │ Detection        │  │ Occupancy         │  │ Path Navigation   │  │ & User Interface   │
+ │ SP1: Auto Learn  │  │ SP2: Hybrid       │  │ SP3: Shortest-    │  │ SP4: Visualization │
+ │ + YOLO26 Tracking│  │ Occupancy         │  │ Path Navigation   │  │ & User Interface   │
  │                  │  │ Classification    │  │                   │  │                    │
  │ In: Video frame  │  │ In: Bounding      │  │ In: Slot statuses,│  │ In: Slot statuses, │
  │ Out: Bounding    │  │  boxes + Slot     │  │  Parking graph,   │  │  Route, Annotated  │
  │  boxes + conf    │  │  polygons         │  │  User position    │  │  frame             │
  │                  │  │ Out: Status mỗi   │  │ Out: Target slot, │  │ Out: Video stream  │
- │ → YOLOv8        │  │  ô (trống/có xe)  │  │  Route, Distance  │  │  + Bản đồ 2D + UI │
+ │ → Baseline + det│  │  ô (+ unknown)     │  │  Route, Distance  │  │  + Bản đồ 2D + UI │
  └───────┬──────────┘  └────────┬──────────┘  └────────┬──────────┘  └──────┬─────────────┘
          │                      │                      │                    │
     ┌────┴────┐           ┌─────┴─────┐           ┌────┴────┐         ┌────┴─────┐
     ▼         ▼           ▼           ▼           ▼         ▼         ▼          ▼
 ┌────────┐┌────────┐ ┌────────┐ ┌─────────┐ ┌────────┐┌────────┐┌────────┐ ┌─────────┐
 │SP1.1   ││SP1.2   │ │SP2.1   │ │SP2.2    │ │SP3.1   ││SP3.2   ││SP4.1   │ │SP4.2    │
-│YOLO    ││Post-   │ │IoA     │ │Temporal │ │Graph   ││Dijkstra││Video   │ │2D Map   │
-│Inference││process │ │Matching│ │Smoothing│ │Modeling││Search  ││Annotate│ │Rendering│
+│Auto    ││YOLO26 +│ │Hybrid  │ │Temporal │ │Graph   ││Dijkstra││Video   │ │2D Map   │
+│Baseline││ByteTrack││Fusion  │ │Hysteresis││Modeling││Search  ││Annotate│ │Rendering│
 │        ││(NMS,   │ │        │ │         │ │        ││        ││        │ │         │
 │In: BGR ││filter) │ │In: BBs │ │In: Raw  │ │In: JSON││In:Graph││In:Frame││In: Slot │
 │ frame  ││In: Raw │ │ + slot │ │ status  │ │ config ││+vacant ││+status ││ statuses│
@@ -179,10 +179,10 @@ Bài toán chính: **Smart Parking Slot Occupancy Detection & Shortest-Path Navi
 
 | Sub-problem | Mô tả | Giải pháp |
 |---|---|---|
-| **SP1.1** – YOLO Inference | Phát hiện phương tiện trong frame | YOLOv8m pretrained trên COCO (car, bus, truck), inference size 1280px |
-| **SP1.2** – Post-processing | Lọc và tinh chỉnh kết quả detection | NMS (tích hợp trong YOLO), lọc theo class ID phương tiện, ngưỡng confidence ≥ 0.15 |
-| **SP2.1** – IoA Matching | Xác định ô đỗ nào đang bị chiếm | Tính Intersection-over-Area (IoA) giữa bbox phương tiện và polygon ô đỗ; ngưỡng IoA > 0.35 hoặc bottom-center nằm trong polygon |
-| **SP2.2** – Temporal Smoothing | Giảm hiện tượng nhấp nháy trạng thái | Majority voting trên cửa sổ trượt 3 frame gần nhất |
+| **SP1.1** – Video Auto-calibration | Gắn appearance rỗng cho từng ô | Quét video, loại frame overlap xe và lấy baseline theo polygon |
+| **SP1.2** – Detection + Tracking | Thêm evidence phương tiện | YOLO26 + ByteTrack; có thể fine-tune từ bãi triển khai |
+| **SP2.1** – Hybrid Occupancy | Xác định trạng thái an toàn | Background change theo polygon hợp nhất với bbox overlap; có trạng thái `unknown` |
+| **SP2.2** – Temporal Hysteresis | Giảm nhấp nháy và false-vacant | Xác nhận `occupied` sau 2 frame, `vacant` sau 4 frame; `unknown` không được định tuyến |
 | **SP3.1** – Graph Modeling | Mô hình hóa bãi đỗ xe dạng đồ thị | Đồ thị vô hướng có trọng số (JSON); node = ô đỗ / waypoint / entrance; edge = khoảng cách thực (mét) |
 | **SP3.2** – Dijkstra Search | Tìm ô trống gần nhất theo đường đi | Thuật toán Dijkstra từ vị trí người dùng; tie-breaking theo thứ tự ID nhỏ nhất |
 | **SP4.1** – Video Annotation | Chú thích trực quan lên video | OpenCV: polygon overlay (xanh/đỏ/vàng), bounding box phương tiện, text thông tin |
@@ -204,7 +204,7 @@ Bài toán chính: **Smart Parking Slot Occupancy Detection & Shortest-Path Navi
 
 ### Dữ liệu đánh giá
 
-> **Lưu ý**: Hệ thống sử dụng YOLOv8m pretrained trên COCO dataset (không huấn luyện lại trên bất kỳ tập dữ liệu bãi đỗ xe nào). Hiện tại **chưa có sẵn** bộ dữ liệu đánh giá riêng. Dưới đây là phương án dự kiến thu thập và chuẩn bị dữ liệu đánh giá cho từng tiêu chí.
+> **Lưu ý**: Hệ thống tự học baseline từ video camera mới bằng YOLO26 + ByteTrack và giữ `unknown` cho ô không đủ evidence. Hiện tại **chưa có sẵn** bộ dữ liệu đánh giá riêng, nên chưa thể tuyên bố đạt target độ chính xác trước khi đo trên video thực tế.
 
 | Dữ liệu cần thu thập | Dùng cho Metric | Phương án thu thập & chuẩn bị |
 |---|---|---|
@@ -241,10 +241,10 @@ Thuật toán xử lý theo pipeline tuần tự cho mỗi frame video, tương 
                                    │
                                    ▼
                     ┌──────────────────────────────┐
-                    │  Bước 1: VEHICLE DETECTION   │  ← SP1.1 + SP1.2
-                    │  YOLOv8m.detect(frame)       │
-                    │  → Danh sách bounding boxes  │
-                    │    (x1,y1,x2,y2) + confidence│
+                    │  Bước 1: AUTO LEARN + TRACK  │  ← SP1.1 + SP1.2
+                    │  scan video + YOLO26 tracks  │
+                    │  → Reference crop + vehicle  │
+                    │    bounding boxes            │
                     └──────────────┬───────────────┘
                                    │
                                    ▼
@@ -252,20 +252,17 @@ Thuật toán xử lý theo pipeline tuần tự cho mỗi frame video, tương 
                     │  Bước 2: SLOT OCCUPANCY      │  ← SP2.1
                     │  CLASSIFICATION              │
                     │  Với mỗi ô đỗ (polygon):     │
-                    │   ∀ bbox ∈ detections:        │
-                    │    IoA = Intersection(slot,   │
-                    │          bbox) / Area(slot)   │
-                    │    if IoA > 0.35 OR           │
-                    │       bottom_center ∈ slot:   │
-                    │      → OCCUPIED               │
-                    │    else: → VACANT              │
+                    │   background change score   │
+                    │   + detector overlap        │
+                    │  → OCCUPIED / VACANT /      │
+                    │    UNKNOWN (fail-safe)      │
                     └──────────────┬───────────────┘
                                    │
                                    ▼
                     ┌──────────────────────────────┐
-                    │  Bước 3: TEMPORAL SMOOTHING   │  ← SP2.2
-                    │  Majority vote trên 3 frame   │
-                    │  gần nhất → trạng thái ổn định│
+                    │  Bước 3: TEMPORAL HYSTERESIS │  ← SP2.2
+                    │  Occupied: 2 / vacant: 4     │
+                    │  frame xác nhận liên tiếp    │
                     └──────────────┬───────────────┘
                                    │
                                    ▼
@@ -303,9 +300,9 @@ Thuật toán xử lý theo pipeline tuần tự cho mỗi frame video, tương 
 
 ### Mô tả chi tiết
 
-1. **Vehicle Detection (SP1)**: Sử dụng model YOLOv8m (pretrained trên COCO dataset) để phát hiện các phương tiện (car, bus, truck) trong frame. Model chạy inference ở resolution 1280px để phát hiện tốt phương tiện nhỏ từ camera overhead. Kết quả sau NMS là danh sách bounding box kèm confidence score.
+1. **Video Auto-calibration & Tracking (SP1)**: Hệ thống quét video, dùng YOLO26 + ByteTrack để loại frame có xe khỏi mẫu nền của từng polygon. Weights có thể được fine-tune theo bãi triển khai.
 
-2. **Slot Occupancy Classification (SP2)**: Với mỗi ô đỗ (được định nghĩa bằng polygon trong file cấu hình), tính Intersection-over-Area (IoA) với từng bounding box phương tiện. Nếu IoA > 0.35 hoặc điểm giữa cạnh dưới (bottom-center) của bbox nằm trong polygon → ô đỗ được đánh dấu "occupied". Kết quả thô sau đó được làm mịn bằng majority voting trên cửa sổ 3 frame để giảm hiện tượng nhấp nháy (flicker).
+2. **Slot Occupancy Classification (SP2)**: Hệ thống đo background change trong polygon và hợp nhất với bbox overlap nếu có. Evidence mơ hồ hoặc ô chưa hiệu chỉnh được gắn `unknown`; hysteresis xác nhận ô trống thận trọng hơn ô đã có xe.
 
 3. **Shortest-Path Navigation (SP3)**: Bãi đỗ xe được mô hình hóa thành đồ thị vô hướng có trọng số, trong đó node là các ô đỗ, waypoint, và entrance; edge là khoảng cách đi bộ/lái xe (mét). Thuật toán Dijkstra chạy từ vị trí người dùng, tìm ô trống gần nhất. Khi nhiều ô có cùng khoảng cách → tie-break bằng ID nhỏ nhất (đảm bảo deterministic).
 
@@ -322,12 +319,12 @@ Thuật toán xử lý theo pipeline tuần tự cho mỗi frame video, tương 
 
 ## 2. Thiên lệch và công bằng (Bias & Fairness)
 
-- **Thiên lệch mô hình**: Model YOLOv8 được huấn luyện trên COCO dataset có thể có bias đối với một số loại phương tiện đặc thù (xe ba gác, xe tải nhỏ địa phương) không phổ biến trong tập huấn luyện, dẫn đến phát hiện sai hoặc bỏ sót.
+- **Thiên lệch mô hình**: Model YOLO26 pretrained trên COCO có thể có bias đối với một số loại phương tiện đặc thù (xe ba gác, xe tải nhỏ địa phương) không phổ biến trong tập huấn luyện, dẫn đến phát hiện sai hoặc bỏ sót.
 - **Công bằng truy cập**: Hệ thống đề xuất ô đỗ gần nhất từ lối vào, có thể vô tình ưu tiên xe đến trước. Cần cân nhắc cơ chế phân bổ công bằng cho người khuyết tật hoặc các nhóm ưu tiên.
 
 ## 3. An toàn (Safety)
 
-- **Rủi ro từ sai sót hệ thống**: Nếu hệ thống phân loại sai (false negative — báo ô trống khi thực tế đã có xe), có thể dẫn đến va chạm khi tài xế di chuyển đến ô đã có xe. Temporal smoothing và ngưỡng IoA được thiết kế để giảm thiểu rủi ro này.
+- **Rủi ro từ sai sót hệ thống**: Nếu hệ thống phân loại sai (false negative — báo ô trống khi thực tế đã có xe), có thể dẫn đến va chạm. Calibration, hysteresis và việc loại `unknown` khỏi đề xuất được thiết kế để giảm rủi ro này.
 - **Phụ thuộc vào hạ tầng**: Khi camera hỏng hoặc mất kết nối mạng, hệ thống không thể cung cấp thông tin → cần có cơ chế fallback (hiển thị cảnh báo, chuyển sang chế độ thủ công).
 
 ## 4. Tác động xã hội (Social Impact)

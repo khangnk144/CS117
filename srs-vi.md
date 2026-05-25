@@ -9,7 +9,7 @@ Tại các trung tâm thương mại hoặc bãi đỗ xe trong nhà, tài xế 
 Để giải quyết vấn đề này, nhóm xây dựng một hệ thống bãi đỗ xe thông minh có khả năng nhận diện trạng thái của từng ô đỗ thông qua camera giám sát, sau đó đề xuất ô đỗ còn trống gần nhất và hiển thị tuyến đường ngắn nhất từ vị trí hiện tại của xe đến ô đỗ được đề xuất.
 
 Hệ thống tập trung vào hai nhiệm vụ chính:
-Thứ nhất, phát hiện phương tiện và phân loại trạng thái từng ô đỗ là trống hoặc đã có xe.
+Thứ nhất, hiệu chỉnh theo camera thực tế và phân loại trạng thái từng ô đỗ là trống, đã có xe hoặc chưa đủ tin cậy.
 Thứ hai, mô hình hóa bãi đỗ xe thành đồ thị để tìm đường đi ngắn nhất đến ô đỗ phù hợp.
 
 ---
@@ -50,7 +50,7 @@ Hệ thống tạo ra các đầu ra sau:
 | ------------------------ | ------------------------------------------------------------------------------------------------ |
 | Video đã chú thích       | Video camera được hiển thị kèm bounding box phương tiện, trạng thái ô đỗ và thông tin trực quan. |
 | Bounding box phương tiện | Vị trí phương tiện được phát hiện trong ảnh, kèm độ tin cậy của mô hình.                         |
-| Trạng thái từng ô đỗ     | Mỗi ô đỗ được phân loại là trống, đã có xe hoặc đang được đề xuất.                               |
+| Trạng thái từng ô đỗ     | Mỗi ô đỗ được phân loại là trống, đã có xe, không chắc chắn hoặc đang được đề xuất.               |
 | Bản đồ bãi xe 2D         | Sơ đồ mặt bằng được cập nhật theo thời gian thực, hiển thị trạng thái các ô đỗ.                  |
 | Ô đỗ được đề xuất        | Mã ô đỗ phù hợp nhất cho tài xế, ví dụ E12.3.                                                    |
 | Tuyến đường ngắn nhất    | Danh sách các điểm đường đi từ vị trí hiện tại đến ô đỗ được đề xuất.                            |
@@ -73,11 +73,11 @@ Quy ước màu hiển thị:
 
 | Mã yêu cầu | Tên yêu cầu                        | Mô tả                                                                                                                  |
 | ---------- | ---------------------------------- | ---------------------------------------------------------------------------------------------------------------------- |
-| FR1        | Phân loại trạng thái ô đỗ          | Hệ thống phải xác định được trạng thái trống hoặc đã có xe của từng ô đỗ từ video camera giám sát.                     |
-| FR2        | Đề xuất ô đỗ tối ưu                | Hệ thống phải chọn được ô đỗ còn trống phù hợp nhất dựa trên khoảng cách đường đi ngắn nhất từ vị trí hiện tại của xe. |
+| FR1        | Phân loại trạng thái ô đỗ          | Sau hiệu chỉnh ảnh nền rỗng, hệ thống phải xác định trạng thái `vacant`, `occupied` hoặc `unknown` của từng ô đỗ từ video camera giám sát. |
+| FR2        | Đề xuất ô đỗ tối ưu                | Hệ thống chỉ được chọn các ô đã được xác nhận `vacant`, sau đó chọn ô phù hợp nhất dựa trên khoảng cách đường đi ngắn nhất. |
 | FR3        | Cập nhật trạng thái thời gian thực | Hệ thống phải tự động cập nhật trạng thái ô đỗ khi xe đi vào hoặc rời khỏi ô đỗ.                                       |
 | FR4        | Hiển thị trực quan                 | Hệ thống phải cung cấp giao diện hiển thị video chú thích, bản đồ 2D, trạng thái ô đỗ và tuyến đường được đề xuất.     |
-| FR5        | Lưu trữ trạng thái hệ thống        | Hệ thống phải lưu lại trạng thái ô đỗ và lịch sử thay đổi để phục vụ kiểm tra và báo cáo cơ bản.                       |
+| FR5        | Lưu cấu hình hiệu chỉnh            | Hệ thống phải lưu ảnh tham chiếu rỗng và cấu hình inference để dùng lại khi khởi động ứng dụng.                       |
 
 ---
 
@@ -107,6 +107,7 @@ Các ràng buộc kỹ thuật của hệ thống:
 | Ánh sáng           | Môi trường bãi đỗ có ánh sáng tương đối ổn định, độ rọi tối thiểu khoảng 30 lux.                  |
 | Kết nối            | Camera và máy chủ xử lý phải có kết nối mạng ổn định để truyền và xử lý video gần thời gian thực. |
 | Bản đồ             | Sơ đồ bãi đỗ phải được cấu hình trước, bao gồm tọa độ ô đỗ và đồ thị đường đi.                    |
+| Hiệu chỉnh         | Hệ thống tự quét video để học appearance rỗng của ô ở các thời điểm detector không thấy xe; ô chưa từng quan sát đủ rõ được xem là `unknown`. |
 | Phạm vi định tuyến | Hệ thống chỉ định tuyến trên một tầng bãi đỗ, không xử lý định tuyến giữa nhiều tầng.             |
 
 ---
@@ -135,12 +136,12 @@ Các chức năng thuộc phạm vi hệ thống:
 
 | Chức năng                 | Mô tả                                                                                |
 | ------------------------- | ------------------------------------------------------------------------------------ |
-| Nhận diện trạng thái ô đỗ | Sử dụng camera và mô hình phát hiện phương tiện để xác định ô trống hoặc đã có xe.   |
+| Nhận diện trạng thái ô đỗ | So sánh từng ô với ảnh tham chiếu rỗng, kết hợp detection tùy chọn và trả về cả trạng thái không chắc chắn. |
 | Đề xuất ô đỗ              | Chọn ô đỗ còn trống có khoảng cách đường đi ngắn nhất từ vị trí hiện tại.            |
 | Tìm đường trong bãi xe    | Sử dụng đồ thị trọng số và thuật toán tìm đường ngắn nhất để tạo tuyến đường.        |
 | Giao diện trực quan       | Hiển thị video đã chú thích, bản đồ 2D, trạng thái ô đỗ và tuyến đường.              |
 | Cập nhật thời gian thực   | Cập nhật trạng thái ô đỗ và giao diện khi có thay đổi.                               |
-| Lưu dữ liệu cơ bản        | Ghi nhận trạng thái ô đỗ và lịch sử thay đổi phục vụ kiểm thử, báo cáo và phân tích. |
+| Lưu dữ liệu cơ bản        | Lưu cấu hình polygon, đồ thị và ảnh tham chiếu rỗng phục vụ inference sau khi khởi động lại. |
 
 ---
 
@@ -197,7 +198,7 @@ Trạng thái từng ô đỗ, ô đỗ được đề xuất, tuyến đường
 
 ### Nhánh 1: Vehicle Detection
 
-**SP1 – Phát hiện phương tiện**
+**SP1 – Phát hiện và theo dõi phương tiện**
 
 **Input:**
 Frame video từ camera giám sát.
@@ -210,8 +211,8 @@ Node lá:
 | Node  | Tên node               | Input                   | Output                                                          | Giải pháp                                 |
 | ----- | ---------------------- | ----------------------- | --------------------------------------------------------------- | ----------------------------------------- |
 | SP1.1 | Chuẩn bị frame đầu vào | Frame video gốc         | Frame đã được resize, chuẩn hóa màu và sẵn sàng đưa vào mô hình | OpenCV preprocessing                      |
-| SP1.2 | Phát hiện phương tiện  | Frame đã chuẩn hóa      | Bounding box, class, confidence của phương tiện                 | YOLOv8 pretrained                         |
-| SP1.3 | Lọc kết quả phát hiện  | Danh sách detection thô | Detection hợp lệ sau khi lọc class và confidence                | Lọc theo class xe, ngưỡng confidence, NMS |
+| SP1.2 | Phát hiện phương tiện  | Frame đã chuẩn hóa      | Bounding box, class, confidence của phương tiện                 | YOLO26 pretrained hoặc weights fine-tune tại bãi xe |
+| SP1.3 | Theo dõi qua video     | Danh sách detection     | Detection liên tục hơn qua các frame                            | ByteTrack để giảm bỏ sót ngắn hạn |
 
 ---
 
@@ -220,18 +221,19 @@ Node lá:
 **SP2 – Phân loại trạng thái ô đỗ**
 
 **Input:**
-Bounding box phương tiện và danh sách polygon của các ô đỗ.
+Frame video, ảnh tham chiếu rỗng theo polygon và bounding box phương tiện nếu detector được bật.
 
 **Output:**
-Trạng thái của từng ô đỗ: trống hoặc đã có xe.
+Trạng thái của từng ô đỗ: `vacant`, `occupied` hoặc `unknown`.
 
 Node lá:
 
 | Node  | Tên node                  | Input                                  | Output                              | Giải pháp                                              |
 | ----- | ------------------------- | -------------------------------------- | ----------------------------------- | ------------------------------------------------------ |
-| SP2.1 | Đối sánh xe với ô đỗ      | Bounding box phương tiện, polygon ô đỗ | Danh sách ô đỗ có khả năng bị chiếm | Tính mức giao giữa bounding box và polygon ô đỗ        |
-| SP2.2 | Phân loại trạng thái ô đỗ | Kết quả đối sánh xe - ô đỗ             | Trạng thái thô của từng ô đỗ        | Quy tắc dựa trên diện tích giao và vị trí xe           |
-| SP2.3 | Làm ổn định trạng thái    | Chuỗi trạng thái theo thời gian        | Trạng thái ổn định, giảm nhấp nháy  | Majority voting hoặc bộ lọc theo cửa sổ thời gian ngắn |
+| SP2.1 | Tự hiệu chỉnh ảnh nền     | Toàn bộ video, polygon, track xe       | Baseline appearance cho từng ô      | Chọn mẫu không overlap xe; lấy median nhiều mẫu        |
+| SP2.2 | Ước lượng occupancy       | Frame hiện tại, baseline, detection    | Score và trạng thái thô             | Background change hợp nhất với overlap detector       |
+| SP2.3 | Làm ổn định trạng thái    | Chuỗi trạng thái theo thời gian        | Trạng thái an toàn, giảm nhấp nháy  | Hysteresis; xác nhận `vacant` chậm hơn `occupied`      |
+| SP2.4 | Xử lý không chắc chắn     | Ô thiếu baseline hoặc evidence mơ hồ   | Trạng thái `unknown`                | Không đưa ô `unknown` vào danh sách đề xuất            |
 
 ---
 
@@ -303,6 +305,7 @@ Phần đánh giá nhằm chứng minh rằng hệ thống có thể đáp ứng
 | M6        | FPS                                | Số frame xử lý được trung bình mỗi giây                                                                    | ≥ 15 FPS | FR4, NFR4 |
 | M7        | Sync Delay                         | Độ lệch thời gian giữa cập nhật trên video chú thích và bản đồ 2D                                          | ≤ 2 giây | FR4, NFR5 |
 | M8        | Stability Rate                     | Tỷ lệ trạng thái ô đỗ không bị thay đổi sai do nhiễu trong khoảng thời gian ngắn                           | ≥ 95%    | NFR6      |
+| M9        | Classification Coverage            | Tỷ lệ dự đoán không rơi vào trạng thái `unknown` trên tập đánh giá                                          | ≥ 95%    | FR1, NFR1 |
 
 ---
 
@@ -312,7 +315,7 @@ Vì hệ thống sử dụng camera tại một bãi đỗ cụ thể nên dữ 
 
 | Loại dữ liệu           | Dùng cho metric        | Phương án thu thập và chuẩn bị                                                                                                                                                                                |
 | ---------------------- | ---------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| Video giám sát bãi đỗ  | M1, M2, M3, M5, M6, M8 | Quay video thực tế từ camera cố định trong bãi đỗ xe, độ phân giải tối thiểu 720p, khuyến nghị 1080p. Dữ liệu cần bao gồm nhiều tình huống: bãi trống, bãi đông, xe đi vào, xe rời đi, xe che khuất một phần. |
+| Video giám sát bãi đỗ  | M1, M2, M3, M5, M6, M8 | Video camera cố định bất kỳ sau khi cấu hình polygon; dữ liệu nên có thời điểm từng ô rỗng để auto-learn và các tình huống: bãi đông, xe đi vào, xe rời đi, che khuất, thay đổi ánh sáng. |
 | Nhãn trạng thái ô đỗ   | M1, M2, M3             | Trích frame từ video theo chu kỳ 5-10 giây, sau đó gán nhãn thủ công trạng thái từng ô là vacant hoặc occupied.                                                                                               |
 | Kịch bản định tuyến    | M4                     | Tạo ít nhất 30 kịch bản gồm vị trí bắt đầu, danh sách ô trống và kết quả đường đi đúng được tính thủ công trên đồ thị.                                                                                        |
 | Log thời gian xử lý    | M5, M6, M7             | Ghi lại timestamp tại các bước: nhận frame, xử lý xong detection, cập nhật trạng thái, hiển thị video và cập nhật bản đồ 2D.                                                                                  |
@@ -332,6 +335,7 @@ Vì hệ thống sử dụng camera tại một bãi đỗ cụ thể nên dữ 
 | FPS              | FR4                    | NFR4                       | Đảm bảo video được xử lý mượt, không gây giật lag nghiêm trọng trên giao diện.                                |
 | Sync Delay       | FR4                    | NFR5                       | Đảm bảo video chú thích và bản đồ 2D không hiển thị lệch trạng thái quá lâu.                                  |
 | Stability Rate   | FR1, FR3               | NFR6                       | Đảm bảo trạng thái ô đỗ không bị nhấp nháy liên tục do nhiễu hình ảnh hoặc detection không ổn định.           |
+| Coverage         | FR1                    | NFR1                       | Tránh đạt F1 cao bằng cách trả về `unknown` quá nhiều thay vì phân loại được ô đỗ.                            |
 
 ---
 
@@ -339,7 +343,7 @@ Vì hệ thống sử dụng camera tại một bãi đỗ cụ thể nên dữ 
 
 | Nhóm kiểm thử              | Mục tiêu                                             | Cách thực hiện                                                                                       |
 | -------------------------- | ---------------------------------------------------- | ---------------------------------------------------------------------------------------------------- |
-| Kiểm thử phân loại ô đỗ    | Đánh giá khả năng xác định vacant / occupied         | So sánh trạng thái hệ thống dự đoán với nhãn thủ công trên tập test.                                 |
+| Kiểm thử phân loại ô đỗ    | Đánh giá khả năng xác định vacant / occupied         | Hiệu chỉnh bằng frame rỗng tách biệt, sau đó so sánh dự đoán với nhãn thủ công; báo cáo thêm tỷ lệ `unknown`. |
 | Kiểm thử định tuyến        | Đánh giá tính đúng của ô đỗ và đường đi được đề xuất | So sánh kết quả Dijkstra của hệ thống với kết quả ground truth tính thủ công.                        |
 | Kiểm thử thời gian thực    | Đánh giá độ trễ và FPS                               | Chạy hệ thống trên video thực tế và ghi log thời gian xử lý.                                         |
 | Kiểm thử đồng bộ giao diện | Đánh giá độ lệch giữa video và map                   | So sánh timestamp của cập nhật video với timestamp cập nhật bản đồ 2D.                               |
@@ -351,7 +355,7 @@ Vì hệ thống sử dụng camera tại một bãi đỗ cụ thể nên dữ 
 
 ## 5.1. Ý tưởng giải pháp tổng thể
 
-Giải pháp tổng thể của hệ thống được xây dựng theo kiến trúc pipeline. Mỗi frame video từ camera được đưa qua các bước xử lý liên tiếp: phát hiện phương tiện, xác định trạng thái từng ô đỗ, làm ổn định kết quả theo thời gian, tìm ô đỗ phù hợp nhất, tính tuyến đường ngắn nhất và hiển thị kết quả lên giao diện.
+Giải pháp tổng thể được xây dựng cho video camera cố định bất kỳ sau khi người dùng định nghĩa polygon ô đỗ. Khi tải video, hệ thống dùng YOLO26 + ByteTrack để quét các frame, tự thu mẫu appearance của từng ô tại thời điểm không quan sát thấy xe và tạo baseline. Mỗi frame vận hành được so sánh với baseline, hợp nhất detection, làm ổn định trạng thái theo thời gian, rồi chỉ định tuyến tới ô đã xác nhận `vacant`.
 
 Các khối trong pipeline tương ứng trực tiếp với các sub-problem trong Decomposition Tree. Điều này giúp đảm bảo rằng bài toán chính được giải quyết thông qua việc kết hợp các lời giải cho từng bài toán con.
 
@@ -371,31 +375,31 @@ Nên vẽ theo dạng flow ngang từ trái sang phải, gồm các khối xử 
 | Thứ tự | Khối xử lý                    | Input                                   | Output                                     | Vai trò                                                             |
 | ------ | ----------------------------- | --------------------------------------- | ------------------------------------------ | ------------------------------------------------------------------- |
 | 1      | Camera Input                  | Video stream từ camera                  | Frame video theo thời gian thực            | Cung cấp dữ liệu hình ảnh đầu vào cho hệ thống.                     |
-| 2      | Vehicle Detection             | Frame video                             | Bounding box và confidence của phương tiện | Phát hiện các phương tiện xuất hiện trong khu vực bãi đỗ.           |
-| 3      | Slot Occupancy Classification | Bounding box và polygon ô đỗ            | Trạng thái thô của từng ô đỗ               | Xác định ô nào đang bị chiếm bởi phương tiện.                       |
-| 4      | Temporal Stabilization        | Chuỗi trạng thái ô đỗ qua nhiều frame   | Trạng thái ổn định của từng ô đỗ           | Giảm hiện tượng trạng thái bị nhấp nháy do detection không ổn định. |
+| 2      | Video Auto-calibration        | Video, polygon và vehicle tracks        | Appearance baseline theo từng ô            | Tự học từ video mới, không yêu cầu toàn bãi trống cùng lúc.          |
+| 3      | Hybrid Occupancy Estimation   | Frame, baseline, detection/tracking     | `occupied` / `vacant` / `unknown`          | Phát hiện thay đổi trong ô và hợp nhất evidence từ mô hình.          |
+| 4      | Temporal Hysteresis           | Chuỗi trạng thái ô đỗ qua nhiều frame   | Trạng thái an toàn, ổn định                | Xác nhận ô trống thận trọng hơn ô đã có xe.                          |
 | 5      | Parking Graph Model           | Bản đồ bãi xe, waypoint, entrance, ô đỗ | Đồ thị trọng số của bãi xe                 | Mô hình hóa các đường đi hợp lệ trong bãi xe.                       |
 | 6      | Slot Recommendation & Routing | Đồ thị, vị trí xe, danh sách ô trống    | Ô đỗ đề xuất và tuyến đường ngắn nhất      | Chọn ô đỗ phù hợp nhất và tạo route hướng dẫn.                      |
 | 7      | Visualization & UI            | Frame, trạng thái slot, route           | Video chú thích và bản đồ 2D               | Hiển thị kết quả trực quan cho người dùng.                          |
-| 8      | Database Logging              | Trạng thái slot, route, timestamp       | Lịch sử trạng thái và log hệ thống         | Lưu dữ liệu phục vụ kiểm thử, báo cáo và phân tích.                 |
+| 8      | Calibration Persistence       | Frame tham chiếu và cấu hình            | File reference và inference config         | Giữ calibration khi ứng dụng khởi động lại.                          |
 
 ---
 
 ## 5.3. Mô tả chi tiết giải pháp
 
-### 5.3.1. Vehicle Detection
+### 5.3.1. Auto-calibration và Vehicle Tracking
 
-Hệ thống sử dụng mô hình YOLOv8 để phát hiện phương tiện trong từng frame video. Các class được quan tâm bao gồm car, bus và truck. Mô hình trả về bounding box, class và độ tin cậy của từng đối tượng được phát hiện.
+Vì camera cố định, nguồn evidence chính là sự thay đổi appearance trong từng polygon so với appearance rỗng của chính ô đó. Ứng dụng tự quét các frame trong video và dùng detection/tracking để loại các frame đang có xe khỏi tập mẫu baseline. Thao tác **Calibrate** thủ công vẫn tồn tại để bổ sung cho ô không từng xuất hiện rỗng trong video.
 
-Sau bước phát hiện, hệ thống lọc kết quả để loại bỏ các đối tượng không liên quan và các detection có độ tin cậy thấp. Chỉ những detection thuộc nhóm phương tiện và vượt qua ngưỡng confidence mới được sử dụng cho bước xác định trạng thái ô đỗ.
+Detector mặc định là Ultralytics YOLO26 với ByteTrack trong chế độ `hybrid`. Detector tự chạy CPU/GPU theo môi trường và có thể được thay bằng weights fine-tune theo camera để tăng recall. Nếu detector không khả dụng, hệ thống chỉ có thể dùng baseline đã hiệu chỉnh thủ công; không tự tuyên bố ô chưa biết là trống.
 
 ---
 
 ### 5.3.2. Slot Occupancy Classification
 
-Mỗi ô đỗ trong bãi xe được biểu diễn bằng một polygon trên ảnh hoặc trên mặt phẳng bản đồ. Sau khi phát hiện phương tiện, hệ thống đối chiếu vị trí bounding box của phương tiện với polygon của từng ô đỗ.
+Mỗi ô đỗ được biểu diễn bằng polygon. Hệ thống lưu crop rỗng của từng ô, sau đó tính độ thay đổi màu trong không gian LAB và thay đổi biên giữa frame hiện tại với crop tham chiếu. Nhiều frame rỗng có thể được tích lũy để lấy median, giảm nhiễu camera.
 
-Một ô đỗ được xem là đã có xe nếu vùng phương tiện giao đáng kể với vùng ô đỗ hoặc vị trí đáy của phương tiện nằm trong vùng ô đỗ. Cách làm này phù hợp với góc nhìn camera từ trên cao hoặc chéo xuống, vì phần đáy của bounding box thường gần với vị trí thực tế của xe trên mặt sàn hơn so với tâm toàn bộ bounding box.
+Khi detector được bật, overlap giữa bounding box xe và polygon là evidence dương mạnh cho `occupied`. Appearance score thấp và không có detection xác nhận `vacant`; vùng score không rõ ràng hoặc thiếu baseline cho kết quả `unknown`. Quy tắc fail-safe này tránh điều hướng tài xế tới một ô mà hệ thống chưa chắc là trống.
 
 Kết quả ban đầu có thể dao động do ánh sáng, che khuất hoặc mô hình phát hiện không ổn định giữa các frame. Vì vậy hệ thống sử dụng cơ chế ổn định theo thời gian để tránh việc trạng thái ô đỗ bị đổi liên tục trong thời gian ngắn.
 
@@ -403,9 +407,9 @@ Kết quả ban đầu có thể dao động do ánh sáng, che khuất hoặc m
 
 ### 5.3.3. Temporal Stabilization
 
-Temporal stabilization giúp làm mượt trạng thái của từng ô đỗ. Thay vì cập nhật trạng thái chỉ dựa trên một frame đơn lẻ, hệ thống xem xét trạng thái của ô đỗ trong một cửa sổ thời gian ngắn.
+Temporal hysteresis làm mượt trạng thái của từng ô đỗ. Thay vì cập nhật trạng thái dựa trên một frame đơn lẻ, hệ thống yêu cầu evidence lặp lại trong nhiều frame.
 
-Nếu đa số các frame gần nhất đều cho thấy ô đỗ đang có xe, hệ thống cập nhật trạng thái là occupied. Nếu đa số frame gần nhất cho thấy ô đỗ trống, hệ thống cập nhật trạng thái là vacant.
+Mặc định, `occupied` cần hai frame xác nhận liên tiếp, còn `vacant` cần bốn frame. Nếu một ô đang được đề xuất là trống nhưng evidence trở nên không chắc chắn, ô đó lập tức trở lại `unknown` và bị loại khỏi định tuyến.
 
 Cơ chế này giúp giảm nhiễu khi detection bị mất trong một vài frame hoặc khi xe đang di chuyển qua vùng ranh giới giữa hai ô đỗ.
 
@@ -428,7 +432,7 @@ Cách mô hình hóa này giúp bài toán tìm đường trong bãi xe trở th
 
 ### 5.3.5. Slot Recommendation & Routing
 
-Sau khi có trạng thái ổn định của các ô đỗ, hệ thống lọc ra danh sách các ô còn trống. Từ vị trí hiện tại của xe, hệ thống tính khoảng cách ngắn nhất đến từng ô trống trên đồ thị bãi xe.
+Sau khi có trạng thái ổn định, hệ thống chỉ lọc các ô có trạng thái `vacant`; `unknown` không phải ô trống. Từ vị trí hiện tại của xe, hệ thống tính khoảng cách ngắn nhất đến từng ô đủ điều kiện trên đồ thị bãi xe.
 
 Ô đỗ được đề xuất là ô có tổng khoảng cách đường đi nhỏ nhất. Trong trường hợp nhiều ô có cùng khoảng cách, hệ thống sử dụng quy tắc ưu tiên cố định, ví dụ chọn ô có ID nhỏ hơn hoặc ô gần lối ra hơn tùy theo cấu hình. Quy tắc này giúp kết quả của hệ thống nhất quán và dễ kiểm chứng.
 
@@ -447,24 +451,18 @@ Thông tin hiển thị cho người dùng bao gồm:
 | Thành phần      | Nội dung                                                 |
 | --------------- | -------------------------------------------------------- |
 | Mã ô đỗ đề xuất | Ví dụ: E12.3                                             |
-| Trạng thái ô đỗ | Trống, đã có xe hoặc được đề xuất                        |
+| Trạng thái ô đỗ | Trống, đã có xe, không chắc chắn hoặc được đề xuất        |
 | Tuyến đường     | Đường đi từ vị trí hiện tại đến ô đỗ                     |
 | Khoảng cách     | Tổng chiều dài tuyến đường                               |
 | Cảnh báo        | Thông báo khi không còn ô trống hoặc camera mất tín hiệu |
 
 ---
 
-### 5.3.7. Database Logging
+### 5.3.7. Calibration Persistence
 
-Hệ thống lưu lại các thông tin quan trọng trong quá trình vận hành, bao gồm trạng thái từng ô đỗ, thời điểm cập nhật, ô đỗ được đề xuất và tuyến đường được chọn.
+Phiên bản hiện tại lưu polygon, đồ thị, tham số inference và ảnh baseline rỗng trong thư mục cấu hình. Việc lưu lịch sử trạng thái vận hành vào cơ sở dữ liệu chưa được triển khai và là phần mở rộng sau.
 
-Dữ liệu này phục vụ ba mục đích chính:
-
-1. Kiểm thử và đánh giá hiệu năng hệ thống.
-2. Phân tích lịch sử sử dụng bãi đỗ.
-3. Truy vết lỗi khi hệ thống đưa ra kết quả sai hoặc không ổn định.
-
-Hệ thống không lưu trữ thông tin nhận dạng cá nhân như biển số xe hoặc khuôn mặt người dùng.
+Hệ thống không nhận dạng hoặc lưu trữ biển số xe hay khuôn mặt người dùng.
 
 ---
 
@@ -473,13 +471,27 @@ Hệ thống không lưu trữ thông tin nhận dạng cá nhân như biển s�
 | Khối solution                 | Sub-problem tương ứng      | Vai trò                                     |
 | ----------------------------- | -------------------------- | ------------------------------------------- |
 | Camera Input                  | P0                         | Cung cấp dữ liệu đầu vào cho toàn hệ thống. |
-| Vehicle Detection             | SP1.1, SP1.2, SP1.3        | Phát hiện phương tiện trong video.          |
-| Slot Occupancy Classification | SP2.1, SP2.2               | Xác định trạng thái từng ô đỗ.              |
-| Temporal Stabilization        | SP2.3                      | Làm ổn định kết quả theo thời gian.         |
+| Detection & Tracking          | SP1.1, SP1.2, SP1.3        | Tự học baseline và xác nhận ô có xe.        |
+| Hybrid Occupancy Estimation   | SP2.1, SP2.2, SP2.4        | Xác định trạng thái an toàn từng ô đỗ.      |
+| Temporal Hysteresis           | SP2.3                      | Làm ổn định kết quả theo thời gian.         |
 | Parking Graph Model           | SP3.1                      | Biểu diễn bãi xe thành đồ thị.              |
 | Slot Recommendation & Routing | SP3.2, SP3.3, SP3.4        | Chọn ô đỗ và tuyến đường ngắn nhất.         |
 | Visualization & UI            | SP4.1, SP4.2, SP4.3, SP4.4 | Hiển thị kết quả cho người dùng.            |
-| Database Logging              | FR5                        | Lưu trạng thái và lịch sử vận hành.         |
+| Calibration Persistence       | FR5                        | Lưu reference thủ công và cấu hình inference; auto-learn chạy lại khi mở video. |
+
+---
+
+## 5.5. Quy trình chạy với video thực tế bất kỳ
+
+1. Đặt video camera cố định vào thư mục `dataset/`, mở giao diện thiết lập và vẽ polygon khít bên trong từng ô đỗ; không có thuật toán tin cậy để suy ra ô đỗ vô hình/không được định nghĩa trong mọi cảnh quay.
+2. Tải video trong giao diện; **Auto Learn Video** tự chạy khi chưa có baseline và có thể chạy lại thủ công. Hệ thống lấy mẫu rải đều trong video, bỏ các frame detector thấy xe tại ô và tạo baseline bằng nhiều mẫu.
+3. Nếu một ô luôn có xe trong toàn video hoặc detector không khả dụng, ô đó còn `unknown` khi không có bằng chứng chắc chắn. Có thể nhập ID ô rỗng tại một frame và bấm **Calibrate** để bổ sung.
+4. Chạy video; màu xám/`?` là `unknown` và không được dùng để đề xuất đường đi. Nếu camera bị dịch chuyển hoặc đổi video, baseline phải được học lại.
+5. Để đánh giá, dùng nhãn thực tế tách biệt và chạy `python evaluate.py --calibration-video dataset/<video>.mp4 --ground-truth <nhãn.json>`; pretrained detector không thay thế việc đo F1 trên video bãi thật.
+
+Chạy offline bằng CLI: `python run_inference.py --video dataset/<video>.mp4 --output results/output.mp4`. CLI tự quét video để auto-calibrate; `--empty-reference`, `--calibrate-first-frame` và `--skip-auto-calibration` dành cho trường hợp kiểm soát riêng.
+
+Đối với camera live không thể đọc trước tương lai, auto-calibration được tích lũy online: các ô chỉ chuyển từ `unknown` sang có thể đề xuất sau khi hệ thống quan sát đủ frame không có xe tại ô đó.
 
 ---
 
@@ -616,12 +628,13 @@ Phần đánh giá sử dụng các tiêu chí định lượng như F1-score, R
 Nên dùng bố cục:
 
 * Node gốc màu xanh đậm.
-* 4 node chính màu xanh nhạt:
+* 5 node chính màu xanh nhạt:
 
-  * Vehicle Detection
-  * Slot Occupancy Classification
+  * Video Auto-calibration & Tracking
+  * Hybrid Occupancy Estimation
   * Parking Recommendation & Routing
   * Visualization & UI
+  * Calibration Persistence
 * Node lá màu trắng, viền xanh.
 * Mỗi node chỉ nên ghi:
 
@@ -638,19 +651,19 @@ Nên dùng bố cục:
 Nên dùng bố cục ngang:
 
 Camera Input
-→ Vehicle Detection
-→ Slot Occupancy Classification
-→ Temporal Stabilization
+→ Video Auto-calibration & Tracking
+→ Hybrid Occupancy Estimation
+→ Temporal Hysteresis
 → Slot Recommendation & Routing
 → Visualization & UI
-→ Database Logging
+→ Calibration Persistence
 
 Mỗi khối nên có icon nhỏ:
 
 * Camera cho input.
-* Xe hoặc AI cho detection.
+* Video/AI cho auto-calibration và tracking.
 * Ô đỗ cho slot classification.
-* Đồng hồ cho temporal stabilization.
+* Đồng hồ cho temporal hysteresis.
 * Bản đồ cho routing.
 * Màn hình cho UI.
 * Database cho logging.

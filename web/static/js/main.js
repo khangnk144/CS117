@@ -13,6 +13,8 @@ const videoFeed = document.getElementById('video-feed');
 const videoOverlay = document.getElementById('video-overlay');
 const btnPlay = document.getElementById('btn-play');
 const btnStep = document.getElementById('btn-step');
+const btnAutoCalibrate = document.getElementById('btn-auto-calibrate');
+const btnCalibrate = document.getElementById('btn-calibrate');
 const iconPlay = document.getElementById('icon-play');
 const iconPause = document.getElementById('icon-pause');
 const playText = document.getElementById('play-text');
@@ -28,6 +30,7 @@ const mapCtx = mapCanvas.getContext('2d');
 const statTotal = document.getElementById('stat-total');
 const statVacant = document.getElementById('stat-vacant');
 const statOccupied = document.getElementById('stat-occupied');
+const statUnknown = document.getElementById('stat-unknown');
 const statTime = document.getElementById('stat-time');
 const navTarget = document.getElementById('nav-target');
 const navDistance = document.getElementById('nav-distance');
@@ -45,6 +48,9 @@ async function init() {
         statusText.textContent = `${config.parking_lot} — ${config.weather}`;
         statusBadge.classList.remove('offline');
         setupSocket();
+        if ((config.calibrated_slots || []).length === 0 && config.video_path) {
+            await autoCalibrateVideo();
+        }
         await processFrame();
 
         // Click on video to set user position
@@ -180,6 +186,7 @@ function updateUI(data) {
         statTotal.textContent = data.summary.total_slots;
         statVacant.textContent = data.summary.vacant;
         statOccupied.textContent = data.summary.occupied;
+        statUnknown.textContent = data.summary.unknown ?? '--';
     }
     statTime.textContent = data.processing_time_ms?.toFixed(0) || '--';
     fpsBadge.textContent = `${data.processing_time_ms?.toFixed(0) || '--'} ms`;
@@ -284,9 +291,12 @@ function drawMap(slotStatuses, navigation) {
         } else if (slot.status === 'occupied') {
             fillColor = 'rgba(239,68,68,0.25)';
             strokeColor = '#ef4444';
-        } else {
+        } else if (slot.status === 'vacant') {
             fillColor = 'rgba(34,197,94,0.25)';
             strokeColor = '#22c55e';
+        } else {
+            fillColor = 'rgba(148,163,184,0.22)';
+            strokeColor = '#94a3b8';
         }
         mapCtx.beginPath();
         mapCtx.moveTo(pts[0][0] * scaleX, pts[0][1] * scaleY);
@@ -328,6 +338,69 @@ btnStep.addEventListener('click', () => {
         updatePlayButton();
     }
     stepFrame();
+});
+
+async function autoCalibrateVideo() {
+    const status = document.getElementById('calibration-status');
+    status.textContent = 'Scanning video for clear observations of each slot...';
+    try {
+        const response = await fetch('/api/auto_calibrate', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({}),
+        });
+        const data = await response.json();
+        if (!response.ok || data.warning) throw new Error(data.error || data.warning);
+        const count = data.calibrated_slots.length;
+        status.textContent = data.complete
+            ? `Auto Learn completed: ${count} slots calibrated.`
+            : `Auto Learn calibrated ${count} slots; manually calibrate slots not observed empty.`;
+        return data;
+    } catch (error) {
+        status.textContent = `Auto Learn unavailable: ${error.message}`;
+        return null;
+    }
+}
+
+btnAutoCalibrate.addEventListener('click', async () => {
+    if (isPlaying) {
+        isPlaying = false;
+        socket.emit('stop_stream');
+        updatePlayButton();
+    }
+    await autoCalibrateVideo();
+    await processFrame();
+});
+
+btnCalibrate.addEventListener('click', async () => {
+    const slotText = document.getElementById('calibration-slots').value.trim();
+    const slotIds = slotText
+        ? slotText.split(',').map(slot => slot.trim()).filter(Boolean)
+        : null;
+    const scope = slotIds ? slotIds.join(', ') : 'all configured slots';
+    const accepted = window.confirm(
+        `Capture empty reference for ${scope}? These slots must currently be empty.`
+    );
+    if (!accepted) return;
+    if (isPlaying) {
+        isPlaying = false;
+        socket.emit('stop_stream');
+        updatePlayButton();
+    }
+    const status = document.getElementById('calibration-status');
+    try {
+        const response = await fetch('/api/calibrate', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ persist: true, append: true, slot_ids: slotIds }),
+        });
+        const data = await response.json();
+        if (!response.ok) throw new Error(data.error);
+        status.textContent = `Calibrated ${data.calibrated_slots.length} slots from the current frame.`;
+        await processFrame();
+    } catch (error) {
+        status.textContent = `Calibration failed: ${error.message}`;
+    }
 });
 
 frameSlider.addEventListener('input', () => {

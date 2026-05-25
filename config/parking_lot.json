@@ -591,10 +591,46 @@
       }
     ]
   },
-  "model": {
-    "edge_threshold": 0.08,
-    "variance_threshold": 25.0,
-    "texture_threshold": 50.0,
-    "combined_score_threshold": 0.45
+  "inference": {
+    "mode": "hybrid",
+    "detector": {
+      "enabled": true,
+      "model": "yolo26s.pt",
+      "device": "auto",
+      "confidence_threshold": 0.25,
+      "image_size": 1280,
+      "overlap_occupied_threshold": 0.3,
+      "tracking_enabled": true,
+      "tracker": "bytetrack.yaml"
+    },
+    "appearance": {
+      "enabled": true,
+      "background_difference_threshold": 0.08,
+      "occupied_threshold": 0.58,
+      "vacant_threshold": 0.3,
+      "allow_uncalibrated_vacant": false,
+      "max_reference_samples": 10
+    },
+    "temporal": {
+      "enabled": true,
+      "occupied_confirm_frames": 2,
+      "vacant_confirm_frames": 4
+    },
+    "stabilization": {
+      "enabled": false,
+      "method": "hybrid",
+      "motion_model": "affine",
+      "smooth_window": 5
+    },
+    "calibration": {
+      "reference_image": "",
+      "references": [],
+      "automatic": {
+        "enabled": true,
+        "scan_frames": 120,
+        "min_samples": 8,
+        "require_detector": true
+      }
+    }
   }
 }
