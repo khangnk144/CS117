@@ -161,7 +161,7 @@ body::before {
 .frame-counter { font-size: 0.75rem; color: var(--text-muted); font-variant-numeric: tabular-nums; min-width: 70px; text-align: right; }
 
 /* Stats */
-.stats-grid { display: grid; grid-template-columns: repeat(5,1fr); gap: var(--spacing-sm); padding: var(--spacing-md) var(--spacing-lg); }
+.stats-grid { display: grid; grid-template-columns: repeat(4,1fr); gap: var(--spacing-sm); padding: var(--spacing-md) var(--spacing-lg); }
 .stat-card {
     background: var(--bg-card); border: 1px solid var(--border-color);
     border-radius: var(--radius-md); padding: var(--spacing-md); text-align: center;
@@ -173,7 +173,6 @@ body::before {
 .stat-total .stat-value { color: var(--accent-blue); }
 .stat-vacant .stat-value { color: var(--accent-green); }
 .stat-occupied .stat-value { color: var(--accent-red); }
-.stat-unknown .stat-value { color: var(--text-muted); }
 .stat-time .stat-value { color: var(--accent-purple); }
 
 /* Map */

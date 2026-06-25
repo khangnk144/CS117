@@ -3,18 +3,23 @@ Flask web application for the Smart Parking System.
 Serves annotated video, 2D parking map, and navigation info.
 Click-to-set start position on the video feed.
 
-Uses empty-reference slot analysis fused with optional object detection.
+Updated for YOLOv8 object detection based slot analysis.
 """
 
 import os
 import sys
 import json
 import time
+import logging
 import cv2
 import base64
 import numpy as np
 import threading
 import argparse
+
+logging.basicConfig(level=logging.INFO,
+                    format="%(asctime)s %(levelname)s %(name)s: %(message)s")
+logger = logging.getLogger("cs117.web")
 from flask import Flask, render_template, jsonify, request, Response, redirect
 from flask_socketio import SocketIO
 
@@ -41,13 +46,71 @@ current_start_node = "E1"
 config = None
 is_playing = False
 video_lock = threading.Lock()
-PROJECT_ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))
+
+# --- Parking status JSON output (event-driven: only written when state changes) ---
+OUTPUT_DIR = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "output"))
+OUTPUT_STATE_PATH = os.path.join(OUTPUT_DIR, "parking_status.json")
+OUTPUT_LOG_PATH = os.path.join(OUTPUT_DIR, "parking_status_log.jsonl")
+_last_output_state = None  # tuple(has_available_slot, recommended_slot) last written
 
 
-def load_system():
+def update_status_output(result, frame_idx):
+    """Write the 2-field parking status JSON, but ONLY when the state changes.
+
+    Demo runs on a pre-recorded video so there is no real "car entered" event to
+    trigger output. Instead we emulate it: process every frame, but only emit/update
+    the output when (has_available_slot, recommended_slot) differs from last time.
+    """
+    global _last_output_state
+
+    summary = result.get("summary", {})
+    has_available_slot = summary.get("vacant", 0) > 0
+    recommended_slot = summary.get("target_slot") if has_available_slot else None
+
+    state = (has_available_slot, recommended_slot)
+    if state == _last_output_state:
+        return  # unchanged -> do not spam the output
+
+    _last_output_state = state
+
+    # Timestamp in video seconds (frame_idx / fps), for the demo timeline.
+    fps = 0.0
+    if video_cap is not None:
+        try:
+            fps = float(video_cap.get(cv2.CAP_PROP_FPS)) or 0.0
+        except Exception:
+            logger.exception("Failed to read video FPS; using t=null in status log.")
+    t_seconds = round(frame_idx / fps, 2) if fps > 0 else None
+
+    payload = {
+        "has_available_slot": has_available_slot,
+        "recommended_slot": recommended_slot,
+    }
+
+    try:
+        os.makedirs(OUTPUT_DIR, exist_ok=True)
+        # Current state: overwrite with exactly the 2 required fields.
+        with open(OUTPUT_STATE_PATH, "w") as f:
+            json.dump(payload, f, indent=2)
+        # History: append one line per change, with timing context.
+        log_entry = {"t": t_seconds, "frame": frame_idx, **payload}
+        with open(OUTPUT_LOG_PATH, "a") as f:
+            f.write(json.dumps(log_entry) + "\n")
+        logger.info("Parking status changed @ t=%ss (frame %s): %s",
+                    t_seconds, frame_idx, payload)
+    except Exception:
+        logger.exception("Failed to write parking status output to %s", OUTPUT_DIR)
+
+
+def load_system(model_name=None):
     global pipeline, frame_pairs, config, video_cap, video_path, total_video_frames
 
-    config_path = os.path.join(PROJECT_ROOT, "config", "parking_lot.json")
+    # Allow overriding the YOLO weights via env var. Default to an official COCO
+    # model that Ultralytics can auto-download (yolov8n-visdrone.pt is not hosted).
+    if model_name is None:
+        model_name = os.environ.get("YOLO_MODEL", "yolov8n.pt")
+
+    config_path = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "config", "parking_lot.json"))
     if not os.path.exists(config_path):
         print(f"WARNING: Config not found at {config_path}")
         print("Please visit /annotate to setup a new parking lot.")
@@ -56,36 +119,20 @@ def load_system():
     with open(config_path) as f:
         config = json.load(f)
 
-    pipeline_config = json.loads(json.dumps(config))
-    reference_image = (
-        pipeline_config.get("inference", {})
-        .get("calibration", {})
-        .get("reference_image")
+    print(f"Initializing YOLO pipeline (model: {model_name}, device: cuda)")
+    pipeline = ParkingPipeline(
+        config,
+        device="cuda",
+        model_name=model_name
     )
-    if reference_image and not os.path.isabs(reference_image):
-        pipeline_config["inference"]["calibration"]["reference_image"] = os.path.join(
-            PROJECT_ROOT, reference_image
-        )
-    references = (
-        pipeline_config.get("inference", {})
-        .get("calibration", {})
-        .get("references", [])
-    )
-    for reference in references:
-        image_path = reference.get("image")
-        if image_path and not os.path.isabs(image_path):
-            reference["image"] = os.path.join(PROJECT_ROOT, image_path)
-    print("Initializing calibrated hybrid occupancy pipeline")
-    pipeline = ParkingPipeline(pipeline_config, device="auto")
 
     if "video_path" in config and config["video_path"]:
         v_path = config["video_path"]
         if not os.path.isabs(v_path):
-            v_path = os.path.join(PROJECT_ROOT, v_path)
+            proj_root = os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))
+            v_path = os.path.join(proj_root, v_path)
         print(f"Attempting to load video from: {v_path}")
         if os.path.exists(v_path):
-            if video_cap is not None:
-                video_cap.release()
             video_cap = cv2.VideoCapture(v_path)
             total_video_frames = int(video_cap.get(cv2.CAP_PROP_FRAME_COUNT))
             if total_video_frames <= 0:
@@ -97,7 +144,7 @@ def load_system():
         else:
             print(f"WARNING: Video file not found at {v_path}")
 
-    pklot_root = os.path.join(PROJECT_ROOT, "dataset", "PKLot", "PKLot")
+    pklot_root = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "dataset", "PKLot", "PKLot"))
     lot = config.get("parking_lot", "PUCPR")
     weather = config.get("weather", "Sunny")
     try:
@@ -213,41 +260,11 @@ def save_config():
         "image_size": img_size,
         "slots": slots,
         "graph": {"nodes": nodes, "edges": edges},
-        "inference": {
-            "mode": "hybrid",
-            "detector": {
-                "enabled": True,
-                "model": "yolo26s.pt",
-                "device": "auto",
-                "confidence_threshold": 0.25,
-                "image_size": 1280,
-                "overlap_occupied_threshold": 0.30,
-                "tracking_enabled": True,
-                "tracker": "bytetrack.yaml",
-            },
-            "appearance": {
-                "enabled": True,
-                "background_difference_threshold": 0.08,
-                "occupied_threshold": 0.58,
-                "vacant_threshold": 0.30,
-                "allow_uncalibrated_vacant": False,
-            },
-            "temporal": {
-                "enabled": True,
-                "occupied_confirm_frames": 2,
-                "vacant_confirm_frames": 4,
-            },
-            "stabilization": {"enabled": False},
-            "calibration": {
-                "reference_image": "",
-                "references": [],
-                "automatic": {
-                    "enabled": True,
-                    "scan_frames": 120,
-                    "min_samples": 8,
-                    "require_detector": True,
-                },
-            },
+        "model": {
+            "edge_threshold": 0.08,
+            "variance_threshold": 25.0,
+            "texture_threshold": 50.0,
+            "combined_score_threshold": 0.45,
         },
     }
     config_path = os.path.join(os.path.dirname(__file__), "..", "config", "parking_lot.json")
@@ -294,23 +311,10 @@ def set_video():
     if os.path.exists(config_path):
         with open(config_path) as f:
             cfg = json.load(f)
-        changed_camera_source = cfg.get("video_path") != new_video_path
         cfg["video_path"] = new_video_path
-        if changed_camera_source:
-            calibration = cfg.setdefault("inference", {}).setdefault("calibration", {})
-            calibration["reference_image"] = ""
-            calibration["references"] = []
         with open(config_path, "w") as f:
             json.dump(cfg, f, indent=2)
-        load_system()
-    return jsonify({
-        "success": True,
-        "message": (
-            f"Video set to {new_video_path}. "
-            "Confirm that slot polygons match this camera view."
-        ),
-        "total_frames": total_video_frames,
-    })
+    return jsonify({"success": True, "message": f"Video set to {new_video_path}", "total_frames": total_video_frames})
 
 @app.route("/api/config")
 def get_config():
@@ -323,8 +327,6 @@ def get_config():
         "parking_lot": config.get("parking_lot", "Unknown"),
         "weather": config.get("weather", "Unknown"),
         "video_path": config.get("video_path", ""),
-        "inference": config.get("inference", {}),
-        "calibrated_slots": pipeline.calibrated_slots if pipeline else [],
     })
 
 @app.route("/api/status")
@@ -371,6 +373,7 @@ def process_single_frame():
 
     result = pipeline.process_frame(frame, start_node=current_start_node,
                                     user_position=user_pos)
+    update_status_output(result, current_frame_idx)
     _, buffer = cv2.imencode(".jpg", result["annotated_frame"],
                              [cv2.IMWRITE_JPEG_QUALITY, 85])
     frame_b64 = base64.b64encode(buffer).decode("utf-8")
@@ -405,81 +408,15 @@ def set_user_position():
     x = data.get("x")
     y = data.get("y")
     if x is None or y is None:
-        app.config["USER_POSITION"] = None
-        return jsonify({"status": "ok", "message": "User position cleared"})
+        return jsonify({"error": "x and y required"}), 400
     app.config["USER_POSITION"] = (x, y)
     print(f"User clicked at ({x}, {y})")
     return jsonify({"status": "ok", "message": f"User position set to ({x},{y})"})
 
 @app.route("/api/calibrate", methods=["POST"])
 def calibrate_analyzer():
-    """Capture empty appearances from the current frame."""
-    global config
-    if pipeline is None:
-        return jsonify({"error": "System not initialized"}), 500
-    data = request.get_json(silent=True) or {}
-    slot_ids = data.get("slot_ids")
-    configured_slot_ids = {slot["id"] for slot in config.get("slots", [])}
-    if slot_ids is not None:
-        slot_ids = [str(slot_id).strip() for slot_id in slot_ids if str(slot_id).strip()]
-        invalid_slot_ids = sorted(set(slot_ids) - configured_slot_ids)
-        if invalid_slot_ids:
-            return jsonify({"error": f"Unknown slot IDs: {', '.join(invalid_slot_ids)}"}), 400
-        if not slot_ids:
-            return jsonify({"error": "slot_ids must identify at least one empty slot"}), 400
-    append = bool(data.get("append", True))
-    persist = bool(data.get("persist", True))
-
-    frame = None
-    if video_cap is not None:
-        with video_lock:
-            video_cap.set(cv2.CAP_PROP_POS_FRAMES, current_frame_idx)
-            ret, frame = video_cap.read()
-        if not ret:
-            frame = None
-    elif frame_pairs:
-        frame = cv2.imread(frame_pairs[current_frame_idx][0])
-    if frame is None:
-        return jsonify({"error": "Cannot read calibration frame"}), 500
-
-    calibrated_slots = pipeline.calibrate(frame, slot_ids=slot_ids, append=append)
-    if persist:
-        reference_name = f"empty_reference_{int(time.time() * 1000)}.jpg"
-        reference_relative_path = os.path.join("config", reference_name)
-        reference_path = os.path.join(PROJECT_ROOT, reference_relative_path)
-        if not cv2.imwrite(reference_path, frame):
-            return jsonify({"error": "Could not save calibration reference"}), 500
-        calibration_config = config.setdefault("inference", {}).setdefault(
-            "calibration", {}
-        )
-        calibration_config.setdefault("references", []).append({
-            "image": reference_relative_path.replace("\\", "/"),
-            "slot_ids": slot_ids or sorted(configured_slot_ids),
-        })
-        config_path = os.path.join(PROJECT_ROOT, "config", "parking_lot.json")
-        with open(config_path, "w") as config_file:
-            json.dump(config, config_file, indent=2)
-
-    return jsonify({
-        "success": True,
-        "calibrated_slots": calibrated_slots,
-        "message": "Captured empty-slot reference. Vacant slots can now be confirmed.",
-    })
-
-@app.route("/api/auto_calibrate", methods=["POST"])
-def auto_calibrate_video():
-    """Scan the selected video and learn empty references without user labels."""
-    global is_playing
-    if pipeline is None:
-        return jsonify({"error": "System not initialized"}), 500
-    if not video_path:
-        return jsonify({"error": "A video source is required for auto-calibration"}), 400
-    is_playing = False
-    data = request.get_json(silent=True) or {}
-    report = pipeline.auto_calibrate_video(
-        video_path, max_samples=data.get("max_samples")
-    )
-    return jsonify({"success": not bool(report.get("warning")), **report})
+    """Calibration is not used in YOLO mode."""
+    return jsonify({"success": True, "message": "Calibration not needed for YOLO mode"})
 
 @socketio.on("connect")
 def handle_connect():
@@ -513,6 +450,7 @@ def handle_start_stream():
         user_pos = app.config.get("USER_POSITION")
         result = pipeline.process_frame(frame, start_node=current_start_node,
                                         user_position=user_pos)
+        update_status_output(result, current_frame_idx)
         _, buffer = cv2.imencode(".jpg", result["annotated_frame"],
                                   [cv2.IMWRITE_JPEG_QUALITY, 80])
         frame_b64 = base64.b64encode(buffer).decode("utf-8")
@@ -537,7 +475,7 @@ def handle_stop_stream():
 if __name__ == "__main__":
     print("=" * 60)
     print("Smart Parking System — Web Interface")
-    print("(Calibrated Hybrid Occupancy Detection)")
+    print("(YOLOv8 Object Detection)")
     print("=" * 60)
     if not load_system():
         print("Started in Setup Mode. Visit http://localhost:5005/annotate to configure.")

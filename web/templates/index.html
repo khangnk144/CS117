@@ -3,7 +3,7 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <meta name="description" content="Calibrated parking slot occupancy detection and shortest-path navigation system">
+    <meta name="description" content="Smart Parking Slot Occupancy Detection and Shortest-Path Navigation System using YOLOv8">
     <title>Smart Parking — Occupancy Detection & Navigation</title>
     <link rel="preconnect" href="https://fonts.googleapis.com">
     <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700;800&display=swap" rel="stylesheet">
@@ -24,7 +24,7 @@
                 </div>
                 <div>
                     <h1>Smart Parking</h1>
-                    <p class="subtitle">Calibrated Hybrid Occupancy Detection & Navigation</p>
+                    <p class="subtitle">Image Analysis Occupancy Detection & Navigation</p>
                 </div>
             </div>
             <div class="header-right" style="display: flex; align-items: center; gap: 15px;">
@@ -76,19 +76,11 @@
                         <svg width="18" height="18" viewBox="0 0 24 24" fill="currentColor"><polygon points="5 4 15 12 5 20 5 4"/><line x1="19" y1="5" x2="19" y2="19" stroke="currentColor" stroke-width="2"/></svg>
                         Step
                     </button>
-                    <button class="btn btn-secondary" id="btn-auto-calibrate" title="Scan video and learn empty appearances automatically">
-                        Auto Learn Video
-                    </button>
-                    <input type="text" id="calibration-slots" class="select-input" placeholder="Empty IDs (blank = all)" title="Comma-separated slots currently empty, for example S1,S4" style="width: 170px;">
-                    <button class="btn btn-secondary" id="btn-calibrate" title="Capture empty appearance for selected slots">
-                        Calibrate
-                    </button>
                     <div class="frame-slider-container">
                         <input type="range" id="frame-slider" class="frame-slider" min="0" max="299" value="0">
                         <span class="frame-counter" id="frame-counter">0 / 0</span>
                     </div>
                 </div>
-                <p id="calibration-status" style="margin: 0 16px 12px; color: #a6adc8; font-size: 12px;">Auto Learn scans the video; manual calibration is available for slots never observed empty.</p>
             </section>
 
             <!-- Right Panel: Map & Controls -->
@@ -106,10 +98,6 @@
                     <div class="stat-card stat-occupied">
                         <div class="stat-value" id="stat-occupied">--</div>
                         <div class="stat-label">Occupied</div>
-                    </div>
-                    <div class="stat-card stat-unknown">
-                        <div class="stat-value" id="stat-unknown">--</div>
-                        <div class="stat-label">Uncertain</div>
                     </div>
                     <div class="stat-card stat-time">
                         <div class="stat-value" id="stat-time">--</div>
