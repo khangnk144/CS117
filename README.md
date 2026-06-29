@@ -192,28 +192,6 @@ http://localhost:5005/annotate
 
 ---
 
-## Chạy inference trên video
-
-```bash
-python run_inference.py --config config/parking_lot.json --video dataset/test.mp4 --output results/output.mp4 --model yolov8n-visdrone.pt
-```
-
----
-
-## Đánh giá
-
-```bash
-python evaluate.py --config config/parking_lot.json --ground-truth dataset/ground_truth.json --model yolov8m.pt --metrics M1 M2 M3
-```
-
-Các tiêu chí đánh giá:
-
-* **M1:** Độ chính xác phân loại trạng thái ô đỗ.
-* **M2:** Độ chính xác đề xuất ô đỗ gần nhất.
-* **M3:** Thời gian phản hồi của hệ thống.
-
----
-
 ## Lưu ý
 
 * Video demo không phải video stream thực tế.
